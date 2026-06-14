@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>مركز التحكم — إدارة فريق السوشيال</title>
+<title>مركز التحكم — نظام السوشيال ميديا ريبورتنج</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -18,6 +18,12 @@
   input, select, textarea { font-family: inherit; }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: #D8DAEA; border-radius: 999px; }
+  @media print {
+    aside { display: none !important; }
+    .no-print { display: none !important; }
+    main { padding: 0 !important; }
+    body { background: #fff !important; }
+  }
 </style>
 </head>
 <body>
@@ -26,7 +32,7 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
 
-/* ===================== storage (localStorage + in-memory fallback) ===================== */
+/* ===================== storage ===================== */
 const _mem = {};
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return _mem[k] ?? null; } },
@@ -42,21 +48,32 @@ const C = {
   line: "#E7E8F2", primary: "#5B4BE5", primarySoft: "#ECEAFD", green: "#1FAE7C", amber: "#E8A33D", rose: "#E0518A",
 };
 const PLATFORMS = {
-  instagram: { label: "إنستجرام", color: "#E1306C" },
-  tiktok: { label: "تيك توك", color: "#111111" },
-  facebook: { label: "فيسبوك", color: "#1877F2" },
-  x: { label: "إكس / تويتر", color: "#1DA1F2" },
-  linkedin: { label: "لينكدإن", color: "#0A66C2" },
-  youtube: { label: "يوتيوب", color: "#FF0000" },
-  snapchat: { label: "سناب شات", color: "#F2C200" },
-  other: { label: "أخرى", color: "#7A7E9C" },
+  instagram: { label: "إنستجرام", color: "#E1306C" }, tiktok: { label: "تيك توك", color: "#111111" },
+  facebook: { label: "فيسبوك", color: "#1877F2" }, x: { label: "إكس / تويتر", color: "#1DA1F2" },
+  linkedin: { label: "لينكدإن", color: "#0A66C2" }, youtube: { label: "يوتيوب", color: "#FF0000" },
+  snapchat: { label: "سناب شات", color: "#F2C200" }, other: { label: "أخرى", color: "#7A7E9C" },
 };
 const ROLES = { social: "سوشيال ميديا", content: "كاتب محتوى", designer: "مصمم", video: "مونتير / فيديو", manager: "مدير حساب" };
+const SENIORITY = {
+  junior: { label: "جونيور", color: "#3DA8E8" }, mid: { label: "ميد-ليفل", color: "#8254E5" },
+  senior: { label: "سينيور", color: "#1FAE7C" }, lead: { label: "تيم ليد", color: "#E8A33D" },
+};
+const OBJECTIVES = { awareness: "وعي بالعلامة", growth: "نمو الجمهور", sales: "مبيعات / تحويلات", engagement: "تفاعل" };
+const PRIORITIES = { high: { label: "عالية", color: "#E0518A" }, med: { label: "متوسطة", color: "#E8A33D" }, low: { label: "منخفضة", color: "#1FAE7C" } };
 const METRICS = [
   { key: "posts", label: "المنشورات" }, { key: "content", label: "المحتوى المنتج" },
   { key: "engagement", label: "معدل التفاعل %" }, { key: "reach", label: "الوصول" },
   { key: "followers", label: "نمو المتابعين" }, { key: "onTime", label: "الالتزام بالمواعيد %" },
 ];
+const METRIC_KEYS = METRICS.map((m) => m.key);
+const PCT_METRICS = { engagement: true, onTime: true };
+const DEFAULT_WEIGHTS = {
+  junior: { posts: 25, content: 25, onTime: 25, engagement: 10, reach: 8, followers: 7 },
+  mid:    { posts: 18, content: 18, onTime: 17, engagement: 22, reach: 13, followers: 12 },
+  senior: { posts: 10, content: 12, onTime: 13, engagement: 28, reach: 18, followers: 19 },
+  lead:   { posts: 8,  content: 10, onTime: 12, engagement: 28, reach: 20, followers: 22 },
+};
+
 const uid = () => Math.random().toString(36).slice(2, 10);
 const nowMonth = () => new Date().toISOString().slice(0, 7);
 const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString("en-US"));
@@ -66,13 +83,33 @@ const monthLabel = (m) => {
   const names = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
   return `${names[+mo - 1]} ${y}`;
 };
+const allMonths = (data) => { const s = new Set(data.kpis.map((k) => k.month)); s.add(nowMonth()); return [...s].sort().reverse(); };
+const emptyTargets = () => ({ posts: 0, content: 0, engagement: 0, reach: 0, followers: 0, onTime: 0 });
 
-/* ===================== icons (inline SVG) ===================== */
+/* ===================== migration ===================== */
+const emptyData = () => ({ projects: [], members: [], assignments: [], kpis: [], weights: JSON.parse(JSON.stringify(DEFAULT_WEIGHTS)) });
+function migrate(d) {
+  if (!d) return emptyData();
+  d.projects = (d.projects || []).map((p) => ({
+    client: "", objective: "growth", startDate: "", priority: "med",
+    ...p, targets: { ...emptyTargets(), ...(p.targets || {}) },
+  }));
+  d.members = (d.members || []).map((m) => ({ seniority: "mid", ...m }));
+  d.assignments = d.assignments || [];
+  d.kpis = d.kpis || [];
+  d.weights = d.weights || {};
+  Object.keys(DEFAULT_WEIGHTS).forEach((lvl) => { if (!d.weights[lvl]) d.weights[lvl] = { ...DEFAULT_WEIGHTS[lvl] }; });
+  return d;
+}
+
+/* ===================== icons ===================== */
 const ICONS = {
   dashboard: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   trending: '<path d="M22 7 13.5 15.5l-5-5L2 17"/><path d="M16 7h6v6"/>',
+  report: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
@@ -83,19 +120,23 @@ const ICONS = {
   heart: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
   userplus: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/>',
-  clock: '<path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/>',
   calendar: '<path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/>',
   sparkles: '<path d="M9.9 15.5A2 2 0 0 0 8.5 14L2.4 12.5a.5.5 0 0 1 0-1L8.5 10A2 2 0 0 0 9.9 8.5l1.6-6.1a.5.5 0 0 1 1 0L14 8.5A2 2 0 0 0 15.5 9.9l6.1 1.6a.5.5 0 0 1 0 1L15.5 14a2 2 0 0 0-1.4 1.4l-1.6 6.1a.5.5 0 0 1-1 0z"/>',
   link: '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><path d="M8 12h8"/>',
   phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.9.6 2.8a2 2 0 0 1-.4 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.9.5 2.8.6A2 2 0 0 1 22 16.9z"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-9 5.7a2 2 0 0 1-2 0L2 7"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  back: '<path d="M5 12h14"/><path d="M13 18l6-6-6-6"/>',
+  target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  star: '<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>',
+  print: '<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
 };
 function Icon({ name, size = 18, color = "currentColor", style }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"
     strokeLinecap="round" strokeLinejoin="round" style={style} dangerouslySetInnerHTML={{ __html: ICONS[name] || "" }} />;
 }
 
-/* ===================== SVG charts ===================== */
+/* ===================== charts ===================== */
 function LineDual({ data, series, height = 230 }) {
   if (!data.length) return null;
   const W = 620, H = height, P = { l: 26, r: 16, t: 16, b: 26 };
@@ -131,8 +172,7 @@ function Bars({ data, series, height = 250 }) {
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="xMidYMid meet" style={{ display: "block" }}>
       <line x1={P.l} x2={W - P.r} y1={P.t + ih} y2={P.t + ih} stroke={C.line} />
       {data.map((d, gi) => {
-        const gx = P.l + gi * gW + gW / 2;
-        const span = series.length * bw + (series.length - 1) * 6;
+        const gx = P.l + gi * gW + gW / 2, span = series.length * bw + (series.length - 1) * 6;
         return (
           <g key={gi}>
             {series.map((s, si) => {
@@ -162,38 +202,30 @@ function Donut({ data, size = 200 }) {
   if (!total) return null;
   const cx = size / 2, cy = size / 2, r = size / 2 - 6, ri = r * 0.6;
   if (data.length === 1) {
-    return (
-      <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ maxHeight: 230, display: "block" }}>
-        <circle cx={cx} cy={cy} r={(r + ri) / 2} fill="none" stroke={data[0].color} strokeWidth={r - ri}>
-          <title>{`${data[0].name}: ${data[0].value}`}</title>
-        </circle>
-      </svg>
-    );
+    return <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ maxHeight: 230, display: "block" }}>
+      <circle cx={cx} cy={cy} r={(r + ri) / 2} fill="none" stroke={data[0].color} strokeWidth={r - ri}><title>{`${data[0].name}: ${data[0].value}`}</title></circle>
+    </svg>;
   }
   let a = -Math.PI / 2;
-  return (
-    <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ maxHeight: 230, display: "block" }}>
-      {data.map((d, i) => {
-        const ang = (d.value / total) * Math.PI * 2, a0 = a; a += ang;
-        return <path key={i} d={arc(cx, cy, r, ri, a0, a0 + ang)} fill={d.color}><title>{`${d.name}: ${d.value}`}</title></path>;
-      })}
-    </svg>
-  );
+  return <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ maxHeight: 230, display: "block" }}>
+    {data.map((d, i) => { const ang = (d.value / total) * Math.PI * 2, a0 = a; a += ang; return <path key={i} d={arc(cx, cy, r, ri, a0, a0 + ang)} fill={d.color}><title>{`${d.name}: ${d.value}`}</title></path>; })}
+  </svg>;
 }
 
-/* ===================== sample / empty ===================== */
+/* ===================== sample ===================== */
 function sampleData() {
   const mth = nowMonth();
-  return {
+  const d = (n) => { const x = new Date(); x.setMonth(x.getMonth() - n); return x.toISOString().slice(0, 7); };
+  return migrate({
     projects: [
-      { id: "p1", name: "براند الأزياء", platform: "instagram", type: "account", handle: "@fashion.brand", status: "active", notes: "" },
-      { id: "p2", name: "حملة رمضان", platform: "tiktok", type: "project", handle: "@brand.tiktok", status: "active", notes: "" },
-      { id: "p3", name: "صفحة الشركة", platform: "facebook", type: "account", handle: "Company Page", status: "active", notes: "" },
+      { id: "p1", name: "براند الأزياء", platform: "instagram", type: "account", handle: "@fashion.brand", status: "active", client: "Fashion Co", objective: "awareness", startDate: "2024-09-01", priority: "high", targets: { posts: 40, content: 50, engagement: 7, reach: 120000, followers: 2000, onTime: 90 }, notes: "" },
+      { id: "p2", name: "حملة رمضان", platform: "tiktok", type: "project", handle: "@brand.tiktok", status: "active", client: "Brand X", objective: "growth", startDate: "2025-02-01", priority: "high", targets: { posts: 25, content: 20, engagement: 8, reach: 300000, followers: 8000, onTime: 85 }, notes: "" },
+      { id: "p3", name: "صفحة الشركة", platform: "facebook", type: "account", handle: "Company Page", status: "active", client: "داخلي", objective: "engagement", startDate: "2024-06-10", priority: "med", targets: { posts: 20, content: 30, engagement: 5, reach: 80000, followers: 1500, onTime: 90 }, notes: "" },
     ],
     members: [
-      { id: "u1", name: "سارة محمد", role: "social", email: "sara@team.com", phone: "0100000000", joinDate: "2024-09-01", notes: "" },
-      { id: "u2", name: "أحمد علي", role: "content", email: "ahmed@team.com", phone: "0111111111", joinDate: "2025-01-15", notes: "" },
-      { id: "u3", name: "منى خالد", role: "video", email: "mona@team.com", phone: "0122222222", joinDate: "2024-06-10", notes: "" },
+      { id: "u1", name: "سارة محمد", role: "social", seniority: "mid", email: "sara@team.com", phone: "0100000000", joinDate: "2024-09-01", notes: "" },
+      { id: "u2", name: "أحمد علي", role: "content", seniority: "junior", email: "ahmed@team.com", phone: "0111111111", joinDate: "2025-01-15", notes: "" },
+      { id: "u3", name: "منى خالد", role: "video", seniority: "senior", email: "mona@team.com", phone: "0122222222", joinDate: "2024-06-10", notes: "" },
     ],
     assignments: [
       { id: uid(), memberId: "u1", projectId: "p1" }, { id: uid(), memberId: "u1", projectId: "p2" },
@@ -206,30 +238,26 @@ function sampleData() {
       { id: uid(), memberId: "u2", projectId: "p1", month: mth, posts: 12, content: 30, engagement: 5.2, reach: 41000, followers: 600, onTime: 100 },
       { id: uid(), memberId: "u2", projectId: "p3", month: mth, posts: 16, content: 24, engagement: 3.8, reach: 62000, followers: 900, onTime: 92 },
       { id: uid(), memberId: "u3", projectId: "p2", month: mth, posts: 9, content: 9, engagement: 11.2, reach: 210000, followers: 5100, onTime: 80 },
+      { id: uid(), memberId: "u1", projectId: "p1", month: d(1), posts: 18, content: 15, engagement: 5.8, reach: 70000, followers: 900, onTime: 90 },
+      { id: uid(), memberId: "u3", projectId: "p2", month: d(1), posts: 8, content: 8, engagement: 9.8, reach: 180000, followers: 4200, onTime: 85 },
     ],
-  };
+  });
 }
-const emptyData = () => ({ projects: [], members: [], assignments: [], kpis: [] });
 
 /* ===================== atoms ===================== */
-function Btn({ children, onClick, kind = "primary", size = "md", style, ...rest }) {
-  const base = { border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6, transition: "filter .15s" };
+function Btn({ children, onClick, kind = "primary", size = "md", style, className, ...rest }) {
+  const base = { border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 };
   const sizes = { md: { padding: "9px 16px", fontSize: 14 }, sm: { padding: "6px 11px", fontSize: 13 } };
-  const kinds = {
-    primary: { background: C.primary, color: "#fff" }, ghost: { background: C.primarySoft, color: C.primary },
-    line: { background: "#fff", color: C.ink, border: `1px solid ${C.line}` },
-  };
-  return <button onClick={onClick} style={{ ...base, ...sizes[size], ...kinds[kind], ...style }} {...rest}>{children}</button>;
+  const kinds = { primary: { background: C.primary, color: "#fff" }, ghost: { background: C.primarySoft, color: C.primary }, line: { background: "#fff", color: C.ink, border: `1px solid ${C.line}` } };
+  return <button className={className} onClick={onClick} style={{ ...base, ...sizes[size], ...kinds[kind], ...style }} {...rest}>{children}</button>;
 }
 function Field({ label, children }) {
-  return <label style={{ display: "block", marginBottom: 14 }}>
-    <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: C.inkSoft, marginBottom: 6 }}>{label}</span>{children}
-  </label>;
+  return <label style={{ display: "block", marginBottom: 14 }}><span style={{ display: "block", fontSize: 13, fontWeight: 700, color: C.inkSoft, marginBottom: 6 }}>{label}</span>{children}</label>;
 }
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.line}`, fontSize: 14, color: C.ink, background: "#fff", outline: "none" };
-function Modal({ title, onClose, children }) {
-  return <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "#14162B66", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 16px", zIndex: 50, overflowY: "auto" }}>
-    <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 18, width: "100%", maxWidth: 520, boxShadow: "0 24px 60px #14162B33" }}>
+function Modal({ title, onClose, children, wide }) {
+  return <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "#14162B66", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 50, overflowY: "auto" }}>
+    <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 18, width: "100%", maxWidth: wide ? 640 : 520, boxShadow: "0 24px 60px #14162B33" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: `1px solid ${C.line}` }}>
         <h3 style={{ margin: 0, fontSize: 17, color: C.ink }}>{title}</h3>
         <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, display: "flex" }}><Icon name="x" size={20} /></button>
@@ -248,17 +276,17 @@ function Empty({ icon, title, sub, action }) {
     <div style={{ fontSize: 14, marginBottom: action ? 18 : 0 }}>{sub}</div>{action}
   </div>;
 }
-function Card({ children, style }) {
-  return <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16, padding: 18, ...style }}>{children}</div>;
+function Card({ children, style, onClick }) {
+  return <div onClick={onClick} style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16, padding: 18, ...style }}>{children}</div>;
 }
-function CardTitle({ children }) { return <h3 style={{ margin: "0 0 14px", fontSize: 15.5, color: C.ink }}>{children}</h3>; }
+function CardTitle({ children, right }) { return <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}><h3 style={{ margin: 0, fontSize: 15.5, color: C.ink }}>{children}</h3>{right}</div>; }
 function IconBtn({ children, onClick, danger }) {
   return <button onClick={onClick} style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: "#fff", color: danger ? C.rose : C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>{children}</button>;
 }
 function Header({ title, sub, right }) {
   return <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
     <div><h1 style={{ margin: 0, fontSize: 25, fontWeight: 800 }}>{title}</h1><div style={{ color: C.inkSoft, fontSize: 14, marginTop: 3 }}>{sub}</div></div>
-    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>{right}</div>
+    <div className="no-print" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>{right}</div>
   </div>;
 }
 function MonthPicker({ months, month, setMonth }) {
@@ -268,9 +296,11 @@ function MonthPicker({ months, month, setMonth }) {
 }
 function Legend({ items }) {
   return <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8, flexWrap: "wrap" }}>
-    {items.map((it, i) => <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: C.inkSoft, fontWeight: 700 }}>
-      <span style={{ width: 12, height: 12, borderRadius: 4, background: it.color }} />{it.label}</span>)}
+    {items.map((it, i) => <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: C.inkSoft, fontWeight: 700 }}><span style={{ width: 12, height: 12, borderRadius: 4, background: it.color }} />{it.label}</span>)}
   </div>;
+}
+function Bar({ pct, color, height = 8 }) {
+  return <div style={{ height, borderRadius: 999, background: C.line, overflow: "hidden", flex: 1 }}><div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: color }} /></div>;
 }
 
 /* ===================== aggregation ===================== */
@@ -282,48 +312,78 @@ function memberAgg(data, memberId, month) {
 }
 function teamScores(data, month) {
   const aggs = data.members.map((m) => ({ member: m, ...memberAgg(data, m.id, month) }));
-  const maxOf = (f) => Math.max(1, ...aggs.map((a) => a[f]));
-  const maxes = { posts: maxOf("posts"), content: maxOf("content"), engagement: maxOf("engagement"), reach: maxOf("reach"), followers: maxOf("followers"), onTime: maxOf("onTime") };
+  const maxes = {}; METRIC_KEYS.forEach((k) => (maxes[k] = Math.max(1, ...aggs.map((a) => a[k]))));
   return aggs.map((a) => {
-    const norm = METRICS.map((mt) => (a[mt.key] / maxes[mt.key]) * 100);
-    const score = a.count ? Math.round(norm.reduce((x, y) => x + y, 0) / norm.length) : 0;
+    const w = data.weights[a.member.seniority] || data.weights.mid || DEFAULT_WEIGHTS.mid;
+    const wsum = METRIC_KEYS.reduce((s, k) => s + (+w[k] || 0), 0) || 1;
+    const score = a.count ? Math.round(METRIC_KEYS.reduce((s, k) => s + (+w[k] || 0) * ((a[k] / maxes[k]) * 100), 0) / wsum) : 0;
     return { ...a, score };
   }).sort((x, y) => y.score - x.score);
+}
+function projectAchievement(data, project, month) {
+  const recs = data.kpis.filter((k) => k.projectId === project.id && k.month === month);
+  const sum = (f) => recs.reduce((a, r) => a + (+r[f] || 0), 0);
+  const avg = (f) => (recs.length ? sum(f) / recs.length : 0);
+  const actuals = { posts: sum("posts"), content: sum("content"), reach: sum("reach"), followers: sum("followers"), engagement: avg("engagement"), onTime: avg("onTime") };
+  const t = project.targets || {};
+  const perMetric = METRICS.map((mt) => {
+    const actual = actuals[mt.key], target = +t[mt.key] || 0;
+    const pct = target > 0 ? Math.round((actual / target) * 100) : null;
+    return { key: mt.key, label: mt.label, actual, target, pct };
+  });
+  const withT = perMetric.filter((x) => x.pct != null);
+  const overall = withT.length ? Math.round(withT.reduce((a, x) => a + Math.min(100, x.pct), 0) / withT.length) : null;
+  return { actuals, perMetric, overall, count: recs.length };
+}
+function achColor(pct) { if (pct == null) return C.inkSoft; if (pct >= 100) return C.green; if (pct >= 70) return C.amber; return C.rose; }
+function achLabel(pct) { if (pct == null) return "بدون هدف"; if (pct >= 100) return "فوق الهدف"; if (pct >= 70) return "على الطريق"; return "تحت الهدف"; }
+function metricVal(key, v) { return PCT_METRICS[key] ? (Math.round(v * 10) / 10) + "%" : fmt(Math.round(v)); }
+
+function downloadCSV(filename, rows) {
+  const csv = rows.map((r) => r.map((c) => { const s = String(c ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n");
+  try {
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) { alert("تعذّر التصدير في هذه البيئة. جرّب من اللينك على GitHub."); }
 }
 
 /* ===================== App ===================== */
 function App() {
-  const [data, setData] = useState(() => loadData() || emptyData());
+  const [data, setData] = useState(() => migrate(loadData()));
   const [tab, setTab] = useState("dash");
   const [month, setMonth] = useState(nowMonth());
   const update = (next) => { setData(next); persist(next); };
-
   const nav = [
     { k: "dash", label: "لوحة التحكم", icon: "dashboard" },
     { k: "projects", label: "المشاريع والحسابات", icon: "folder" },
     { k: "team", label: "الفريق", icon: "users" },
     { k: "perf", label: "الأداء و الـKPIs", icon: "trending" },
+    { k: "reports", label: "التقارير", icon: "report" },
+    { k: "settings", label: "أوزان التقييم", icon: "settings" },
   ];
-
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.ink, display: "flex" }}>
-      <aside style={{ width: 248, background: C.sidebar, color: "#fff", padding: "22px 16px", display: "flex", flexDirection: "column", gap: 6, position: "sticky", top: 0, height: "100vh", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 22px" }}>
+      <aside style={{ width: 248, background: C.sidebar, color: "#fff", padding: "22px 16px", display: "flex", flexDirection: "column", gap: 4, position: "sticky", top: 0, height: "100vh", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 18px" }}>
           <div style={{ width: 38, height: 38, borderRadius: 11, background: C.primary, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon name="award" size={20} color="#fff" /></div>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>مركز التحكم</div><div style={{ fontSize: 11, color: "#A8AAC8" }}>إدارة فريق السوشيال</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>مركز التحكم</div><div style={{ fontSize: 11, color: "#A8AAC8" }}>سوشيال ميديا ريبورتنج</div></div>
         </div>
         {nav.map((n) => (
-          <button key={n.k} onClick={() => setTab(n.k)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 13px", borderRadius: 11, border: "none", cursor: "pointer", fontSize: 14.5, fontWeight: 700, textAlign: "right", background: tab === n.k ? C.primary : "transparent", color: tab === n.k ? "#fff" : "#C5C7E0" }}>
-            <Icon name={n.icon} size={19} /> {n.label}
+          <button key={n.k} onClick={() => setTab(n.k)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 13px", borderRadius: 11, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, textAlign: "right", background: tab === n.k ? C.primary : "transparent", color: tab === n.k ? "#fff" : "#C5C7E0" }}>
+            <Icon name={n.icon} size={18} /> {n.label}
           </button>
         ))}
         <div style={{ marginTop: "auto", fontSize: 11.5, color: "#6E7196", padding: "0 8px", lineHeight: 1.7 }}>البيانات بتتحفظ تلقائيًا على المتصفّح ده.</div>
       </aside>
       <main style={{ flex: 1, padding: "26px 30px", minWidth: 0 }}>
         {tab === "dash" && <Dashboard data={data} month={month} setMonth={setMonth} update={update} setTab={setTab} />}
-        {tab === "projects" && <Projects data={data} update={update} />}
+        {tab === "projects" && <Projects data={data} update={update} month={month} setMonth={setMonth} />}
         {tab === "team" && <Team data={data} update={update} />}
         {tab === "perf" && <Performance data={data} month={month} setMonth={setMonth} update={update} />}
+        {tab === "reports" && <Reports data={data} month={month} setMonth={setMonth} />}
+        {tab === "settings" && <Settings data={data} update={update} />}
       </main>
     </div>
   );
@@ -331,7 +391,7 @@ function App() {
 
 /* ===================== Dashboard ===================== */
 function Dashboard({ data, month, setMonth, update, setTab }) {
-  const months = useMemo(() => { const s = new Set(data.kpis.map((k) => k.month)); s.add(nowMonth()); return [...s].sort().reverse(); }, [data.kpis]);
+  const months = useMemo(() => allMonths(data), [data.kpis]);
   const totals = useMemo(() => {
     const recs = data.kpis.filter((k) => k.month === month);
     const sum = (f) => recs.reduce((a, r) => a + (Number(r[f]) || 0), 0);
@@ -345,10 +405,7 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
   }, [data, month]);
   const scores = useMemo(() => teamScores(data, month), [data, month]);
   const top = scores.filter((s) => s.count > 0).slice(0, 5);
-  const trend = useMemo(() => {
-    const last6 = [...months].slice(0, 6).reverse();
-    return last6.map((m) => { const recs = data.kpis.filter((k) => k.month === m); const eng = recs.length ? recs.reduce((a, r) => a + (+r.engagement || 0), 0) / recs.length : 0; return { name: monthLabel(m).split(" ")[0], posts: recs.reduce((a, r) => a + (+r.posts || 0), 0), eng: +eng.toFixed(1) }; });
-  }, [data.kpis, months]);
+  const trend = useMemo(() => [...months].slice(0, 6).reverse().map((m) => { const recs = data.kpis.filter((k) => k.month === m); const eng = recs.length ? recs.reduce((a, r) => a + (+r.engagement || 0), 0) / recs.length : 0; return { name: monthLabel(m).split(" ")[0], posts: recs.reduce((a, r) => a + (+r.posts || 0), 0), eng: +eng.toFixed(1) }; }), [data.kpis, months]);
   const isEmpty = !data.projects.length && !data.members.length;
 
   const stat = (label, value, icon, color) => (
@@ -357,7 +414,6 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
       <div><div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1 }}>{value}</div><div style={{ fontSize: 13, color: C.inkSoft }}>{label}</div></div>
     </Card>
   );
-
   return (
     <div>
       <Header title="لوحة التحكم" sub="كل أرقام الفريق في مكان واحد" right={<MonthPicker months={months} month={month} setMonth={setMonth} />} />
@@ -385,29 +441,30 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
             <Card>
               <CardTitle>المنشورات حسب المنصّة</CardTitle>
               {byPlatform.length ? <Donut data={byPlatform} /> : <Empty icon="file" title="لا توجد بيانات" sub="سجّل KPIs للشهر ده." />}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10, justifyContent: "center" }}>
-                {byPlatform.map((e, i) => <Pill key={i} color={e.color}>{e.name} · {fmt(e.value)}</Pill>)}
-              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10, justifyContent: "center" }}>{byPlatform.map((e, i) => <Pill key={i} color={e.color}>{e.name} · {fmt(e.value)}</Pill>)}</div>
             </Card>
           </div>
           <Card>
-            <CardTitle>أفضل أداء — {monthLabel(month)}</CardTitle>
+            <CardTitle>أفضل أداء (محسوب حسب السينيوريتي) — {monthLabel(month)}</CardTitle>
             {top.length ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {top.map((s, i) => (
-                  <div key={s.member.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 12px", borderRadius: 12, background: i === 0 ? "#FFF8E9" : C.bg }}>
-                    <div style={{ width: 30, height: 30, borderRadius: 9, background: i === 0 ? C.amber : "#fff", border: `1px solid ${C.line}`, color: i === 0 ? "#fff" : C.inkSoft, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, flexShrink: 0 }}>{i + 1}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 800 }}>{s.member.name}</div>
-                      <div style={{ fontSize: 12, color: C.inkSoft }}>{ROLES[s.member.role]} · {s.count} حساب · {fmt(s.posts)} منشور · {s.engagement.toFixed(1)}% تفاعل</div>
+                {top.map((s, i) => {
+                  const sn = SENIORITY[s.member.seniority] || SENIORITY.mid;
+                  return (
+                    <div key={s.member.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 12px", borderRadius: 12, background: i === 0 ? "#FFF8E9" : C.bg }}>
+                      <div style={{ width: 30, height: 30, borderRadius: 9, background: i === 0 ? C.amber : "#fff", border: `1px solid ${C.line}`, color: i === 0 ? "#fff" : C.inkSoft, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 800, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>{s.member.name} <Pill color={sn.color}><Icon name="star" size={11} /> {sn.label}</Pill></div>
+                        <div style={{ fontSize: 12, color: C.inkSoft }}>{ROLES[s.member.role]} · {s.count} حساب · {fmt(s.posts)} منشور · {s.engagement.toFixed(1)}% تفاعل</div>
+                      </div>
+                      <div style={{ width: 120 }}><Bar pct={s.score} color={C.primary} /></div>
+                      <div style={{ fontWeight: 800, color: C.primary, width: 36, textAlign: "left" }}>{s.score}</div>
                     </div>
-                    <div style={{ width: 120, height: 8, borderRadius: 999, background: C.line, overflow: "hidden" }}><div style={{ width: `${s.score}%`, height: "100%", background: C.primary }} /></div>
-                    <div style={{ fontWeight: 800, color: C.primary, width: 36, textAlign: "left" }}>{s.score}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : <Empty icon="award" title="لا يوجد أداء مسجّل" sub="روح تبويب الأداء وسجّل أرقام الشهر." />}
-            <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 10 }}>نقاط الأداء = متوسط ترتيب الفرد نسبةً لأعلى أداء في الفريق في كل مقياس (٠–١٠٠).</div>
+            <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 10 }}>الدرجة بتتحسب بأوزان مختلفة حسب مستوى كل فرد — تقدر تعدّل الأوزان من تبويب «أوزان التقييم».</div>
           </Card>
         </>
       )}
@@ -416,45 +473,59 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
 }
 
 /* ===================== Projects ===================== */
-function Projects({ data, update }) {
+function Projects({ data, update, month, setMonth }) {
   const [modal, setModal] = useState(null);
   const [q, setQ] = useState("");
+  const [selected, setSelected] = useState(null);
   const save = (p) => { const exists = data.projects.find((x) => x.id === p.id); update({ ...data, projects: exists ? data.projects.map((x) => (x.id === p.id ? p : x)) : [...data.projects, p] }); setModal(null); };
-  const remove = (id) => { if (!confirm("هتمسح المشروع ده وكل البيانات المرتبطة بيه. متأكد؟")) return; update({ ...data, projects: data.projects.filter((x) => x.id !== id), assignments: data.assignments.filter((a) => a.projectId !== id), kpis: data.kpis.filter((k) => k.projectId !== id) }); };
-  const list = data.projects.filter((p) => p.name.includes(q) || (p.handle || "").includes(q));
+  const remove = (id) => { if (!confirm("هتمسح المشروع ده وكل البيانات المرتبطة بيه. متأكد؟")) return; update({ ...data, projects: data.projects.filter((x) => x.id !== id), assignments: data.assignments.filter((a) => a.projectId !== id), kpis: data.kpis.filter((k) => k.projectId !== id) }); setSelected(null); };
+
+  if (selected) {
+    const proj = data.projects.find((p) => p.id === selected);
+    if (proj) return <ProjectDetail data={data} project={proj} month={month} setMonth={setMonth} onBack={() => setSelected(null)} onEdit={() => setModal({ ...proj })} modal={modal} setModal={setModal} save={save} />;
+  }
+  const list = data.projects.filter((p) => p.name.includes(q) || (p.handle || "").includes(q) || (p.client || "").includes(q));
   return (
     <div>
-      <Header title="المشاريع والحسابات" sub="حسابات السوشيال ميديا والبروجكتس اللي بيشتغل عليها الفريق" right={<Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> إضافة مشروع</Btn>} />
+      <Header title="المشاريع والحسابات" sub="كل مشروع بتفاصيله وأهدافه وأرقامه" right={<Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> إضافة مشروع</Btn>} />
       {data.projects.length > 0 && (
         <div style={{ position: "relative", marginBottom: 16, maxWidth: 320 }}>
           <span style={{ position: "absolute", right: 12, top: 11, color: C.inkSoft }}><Icon name="search" size={16} /></span>
-          <input placeholder="بحث…" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...inputStyle, paddingRight: 36 }} />
+          <input placeholder="بحث بالاسم أو العميل…" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...inputStyle, paddingRight: 36 }} />
         </div>
       )}
       {data.projects.length === 0 ? (
         <Card><Empty icon="folder" title="مفيش مشاريع لسه" sub="ضيف أول حساب أو بروجكت عشان تبدأ توزّع الفريق عليه." action={<Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> إضافة مشروع</Btn>} /></Card>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(310px, 1fr))", gap: 14 }}>
           {list.map((p) => {
-            const pl = PLATFORMS[p.platform] || PLATFORMS.other;
+            const pl = PLATFORMS[p.platform] || PLATFORMS.other, pr = PRIORITIES[p.priority] || PRIORITIES.med;
             const team = data.assignments.filter((a) => a.projectId === p.id).length;
+            const ach = projectAchievement(data, p, month);
             return (
-              <Card key={p.id} style={{ padding: 0, overflow: "hidden" }}>
+              <Card key={p.id} style={{ padding: 0, overflow: "hidden", cursor: "pointer" }} onClick={() => setSelected(p.id)}>
                 <div style={{ height: 6, background: pl.color }} />
                 <div style={{ padding: 18 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-                    <div><div style={{ fontWeight: 800, fontSize: 17 }}>{p.name}</div>
-                      {p.handle && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}><Icon name="link" size={13} /> {p.handle}</div>}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: 17 }}>{p.name}</div>
+                      <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 2 }}>{p.client ? `العميل: ${p.client}` : (p.handle || "")}</div>
                     </div>
-                    <div style={{ display: "flex", gap: 4 }}><IconBtn onClick={() => setModal({ ...p })}><Icon name="pencil" size={15} /></IconBtn><IconBtn danger onClick={() => remove(p.id)}><Icon name="trash" size={15} /></IconBtn></div>
+                    <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                      <IconBtn onClick={() => setModal({ ...p })}><Icon name="pencil" size={15} /></IconBtn>
+                      <IconBtn danger onClick={() => remove(p.id)}><Icon name="trash" size={15} /></IconBtn>
+                    </div>
                   </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
                     <Pill color={pl.color}>{pl.label}</Pill>
-                    <Pill color={C.inkSoft}>{p.type === "project" ? "بروجكت" : "حساب"}</Pill>
-                    <Pill color={p.status === "active" ? C.green : C.amber}>{p.status === "active" ? "نشط" : "متوقف"}</Pill>
-                    <Pill color={C.primary}><Icon name="users" size={12} /> {team} من الفريق</Pill>
+                    <Pill color={C.inkSoft}>{OBJECTIVES[p.objective] || "—"}</Pill>
+                    <Pill color={pr.color}>أولوية {pr.label}</Pill>
+                    <Pill color={C.primary}><Icon name="users" size={12} /> {team}</Pill>
                   </div>
-                  {p.notes && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 12, lineHeight: 1.6 }}>{p.notes}</div>}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 12, color: C.inkSoft, fontWeight: 700, whiteSpace: "nowrap" }}>إنجاز {monthLabel(month).split(" ")[0]}</span>
+                    {ach.overall != null ? <><Bar pct={ach.overall} color={achColor(ach.overall)} /><span style={{ fontWeight: 800, color: achColor(ach.overall), fontSize: 13, width: 40, textAlign: "left" }}>{ach.overall}%</span></> : <span style={{ fontSize: 12, color: C.inkSoft }}>حدّد أهداف للمشروع</span>}
+                  </div>
                 </div>
               </Card>
             );
@@ -465,21 +536,123 @@ function Projects({ data, update }) {
     </div>
   );
 }
-function ProjectForm({ initial, onSave, onClose }) {
-  const [f, setF] = useState(initial || { id: uid(), name: "", platform: "instagram", type: "account", handle: "", status: "active", notes: "" });
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+function ProjectDetail({ data, project, month, setMonth, onBack, onEdit, modal, setModal, save }) {
+  const months = useMemo(() => allMonths(data), [data.kpis]);
+  const pl = PLATFORMS[project.platform] || PLATFORMS.other, pr = PRIORITIES[project.priority] || PRIORITIES.med;
+  const ach = projectAchievement(data, project, month);
+  const teamRows = data.assignments.filter((a) => a.projectId === project.id).map((a) => {
+    const m = data.members.find((x) => x.id === a.memberId); if (!m) return null;
+    const rec = data.kpis.find((k) => k.memberId === m.id && k.projectId === project.id && k.month === month);
+    return { member: m, rec };
+  }).filter(Boolean);
+  const trend = [...months].slice(0, 6).reverse().map((mn) => { const recs = data.kpis.filter((k) => k.projectId === project.id && k.month === mn); const eng = recs.length ? recs.reduce((a, r) => a + (+r.engagement || 0), 0) / recs.length : 0; return { name: monthLabel(mn).split(" ")[0], posts: recs.reduce((a, r) => a + (+r.posts || 0), 0), eng: +eng.toFixed(1) }; });
   return (
-    <Modal title={initial ? "تعديل المشروع" : "مشروع / حساب جديد"} onClose={onClose}>
-      <Field label="الاسم *"><input style={inputStyle} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="مثال: حساب البراند على إنستجرام" /></Field>
+    <div>
+      <div className="no-print" style={{ marginBottom: 14 }}><Btn kind="line" size="sm" onClick={onBack}><Icon name="back" size={15} /> رجوع للمشاريع</Btn></div>
+      <Header title={project.name} sub={project.client ? `العميل: ${project.client}` : pl.label} right={<><MonthPicker months={months} month={month} setMonth={setMonth} /><Btn kind="line" onClick={onEdit}><Icon name="pencil" size={15} /> تعديل</Btn></>} />
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <Pill color={pl.color}>{pl.label}</Pill>
+        <Pill color={C.inkSoft}>{project.type === "project" ? "بروجكت" : "حساب"}</Pill>
+        <Pill color={C.primary}>{OBJECTIVES[project.objective] || "—"}</Pill>
+        <Pill color={pr.color}>أولوية {pr.label}</Pill>
+        <Pill color={project.status === "active" ? C.green : C.amber}>{project.status === "active" ? "نشط" : "متوقف"}</Pill>
+        {project.handle && <Pill color={C.inkSoft}><Icon name="link" size={12} /> {project.handle}</Pill>}
+        {project.startDate && <Pill color={C.inkSoft}><Icon name="calendar" size={12} /> بدأ {project.startDate}</Pill>}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16, marginBottom: 16 }}>
+        <Card>
+          <CardTitle right={ach.overall != null ? <Pill color={achColor(ach.overall)}>{ach.overall}% — {achLabel(ach.overall)}</Pill> : null}>الأهداف × الفعلي — {monthLabel(month)}</CardTitle>
+          {ach.perMetric.every((x) => x.target === 0) ? (
+            <Empty icon="target" title="مفيش أهداف محددة" sub="اضغط «تعديل» وحدّد أهداف شهرية لكل مقياس." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {ach.perMetric.map((x) => (
+                <div key={x.key}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
+                    <span style={{ fontWeight: 700 }}>{x.label}</span>
+                    <span style={{ color: C.inkSoft }}>{metricVal(x.key, x.actual)} {x.target ? <span>/ هدف {metricVal(x.key, x.target)}</span> : ""}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <Bar pct={x.pct == null ? 0 : x.pct} color={achColor(x.pct)} />
+                    <span style={{ width: 44, textAlign: "left", fontWeight: 800, fontSize: 13, color: achColor(x.pct) }}>{x.pct == null ? "—" : x.pct + "%"}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+        <Card>
+          <CardTitle>اتجاه المشروع</CardTitle>
+          <LineDual data={trend} series={[{ k: "posts", color: C.primary, label: "منشورات" }, { k: "eng", color: C.green, label: "تفاعل %" }]} height={200} />
+          <Legend items={[{ color: C.primary, label: "منشورات" }, { color: C.green, label: "تفاعل %" }]} />
+        </Card>
+      </div>
+
+      <Card>
+        <CardTitle>الفريق على المشروع ({teamRows.length})</CardTitle>
+        {teamRows.length === 0 ? <Empty icon="users" title="مفيش حد متعيّن" sub="من تبويب الفريق اربط أفراد بالمشروع ده." /> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 700 }}>
+              <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}>
+                {["الفرد", "المستوى", "منشورات", "محتوى", "تفاعل", "وصول", "متابعين +", "التزام"].map((h, i) => <th key={i} style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {teamRows.map(({ member, rec }) => {
+                  const sn = SENIORITY[member.seniority] || SENIORITY.mid;
+                  return (
+                    <tr key={member.id} style={{ borderBottom: `1px solid ${C.line}` }}>
+                      <td style={{ padding: "10px", fontWeight: 700 }}>{member.name}</td>
+                      <td style={{ padding: "10px" }}><Pill color={sn.color}>{sn.label}</Pill></td>
+                      {rec ? <>
+                        <td style={{ padding: "10px" }}>{fmt(rec.posts)}</td><td style={{ padding: "10px" }}>{fmt(rec.content)}</td>
+                        <td style={{ padding: "10px" }}>{rec.engagement}%</td><td style={{ padding: "10px" }}>{fmt(rec.reach)}</td>
+                        <td style={{ padding: "10px" }}>{fmt(rec.followers)}</td><td style={{ padding: "10px" }}>{rec.onTime}%</td>
+                      </> : <td colSpan={6} style={{ padding: "10px", color: C.inkSoft }}>لم يُسجّل أداء هذا الشهر</td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {project.notes && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 14, lineHeight: 1.7, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>{project.notes}</div>}
+      </Card>
+      {modal && !modal.new && <ProjectForm initial={modal} onSave={save} onClose={() => setModal(null)} />}
+    </div>
+  );
+}
+
+function ProjectForm({ initial, onSave, onClose }) {
+  const [f, setF] = useState(initial || { id: uid(), name: "", platform: "instagram", type: "account", handle: "", status: "active", client: "", objective: "growth", startDate: "", priority: "med", targets: emptyTargets(), notes: "" });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const setT = (k, v) => setF((p) => ({ ...p, targets: { ...p.targets, [k]: v === "" ? 0 : Number(v) } }));
+  return (
+    <Modal wide title={initial ? "تعديل المشروع" : "مشروع / حساب جديد"} onClose={onClose}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="الاسم *"><input style={inputStyle} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="اسم المشروع/الحساب" /></Field>
+        <Field label="العميل / البراند"><input style={inputStyle} value={f.client} onChange={(e) => set("client", e.target.value)} placeholder="اسم العميل" /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <Field label="المنصّة"><select style={inputStyle} value={f.platform} onChange={(e) => set("platform", e.target.value)}>{Object.entries(PLATFORMS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></Field>
         <Field label="النوع"><select style={inputStyle} value={f.type} onChange={(e) => set("type", e.target.value)}><option value="account">حساب</option><option value="project">بروجكت</option></select></Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="المعرّف / اليوزر"><input style={inputStyle} value={f.handle} onChange={(e) => set("handle", e.target.value)} placeholder="@username" /></Field>
         <Field label="الحالة"><select style={inputStyle} value={f.status} onChange={(e) => set("status", e.target.value)}><option value="active">نشط</option><option value="paused">متوقف</option></select></Field>
       </div>
-      <Field label="ملاحظات"><textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical" }} value={f.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="الهدف"><select style={inputStyle} value={f.objective} onChange={(e) => set("objective", e.target.value)}>{Object.entries(OBJECTIVES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+        <Field label="الأولوية"><select style={inputStyle} value={f.priority} onChange={(e) => set("priority", e.target.value)}>{Object.entries(PRIORITIES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></Field>
+        <Field label="تاريخ البداية"><input type="date" style={inputStyle} value={f.startDate} onChange={(e) => set("startDate", e.target.value)} /></Field>
+      </div>
+      <Field label="المعرّف / اليوزر"><input style={inputStyle} value={f.handle} onChange={(e) => set("handle", e.target.value)} placeholder="@username" /></Field>
+      <div style={{ background: C.bg, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 13.5, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}><Icon name="target" size={15} color={C.primary} /> الأهداف الشهرية</div>
+        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 10 }}>سيب القيمة صفر لو مفيش هدف للمقياس ده.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          {METRICS.map((mt) => <Field key={mt.key} label={mt.label}><input type="number" min="0" step="any" style={inputStyle} value={f.targets[mt.key]} onChange={(e) => setT(mt.key, e.target.value)} /></Field>)}
+        </div>
+      </div>
+      <Field label="ملاحظات"><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical" }} value={f.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
       <div style={{ display: "flex", gap: 10, marginTop: 6 }}><Btn onClick={() => f.name.trim() && onSave(f)}>حفظ</Btn><Btn kind="line" onClick={onClose}>إلغاء</Btn></div>
     </Modal>
   );
@@ -493,14 +666,15 @@ function Team({ data, update }) {
   const toggleAssign = (memberId, projectId) => { const ex = data.assignments.find((a) => a.memberId === memberId && a.projectId === projectId); update({ ...data, assignments: ex ? data.assignments.filter((a) => a !== ex) : [...data.assignments, { id: uid(), memberId, projectId }] }); };
   return (
     <div>
-      <Header title="الفريق" sub="أفراد فريقك وتفاصيلهم وتوزيعهم على المشاريع" right={<Btn onClick={() => setModal({ new: true })}><Icon name="userplus" size={16} /> إضافة فرد</Btn>} />
+      <Header title="الفريق" sub="أفراد فريقك، مستواهم، وتوزيعهم على المشاريع" right={<Btn onClick={() => setModal({ new: true })}><Icon name="userplus" size={16} /> إضافة فرد</Btn>} />
       {data.members.length === 0 ? (
-        <Card><Empty icon="users" title="مفيش أفراد لسه" sub="ضيف أعضاء فريقك بأسمائهم وأدوارهم." action={<Btn onClick={() => setModal({ new: true })}><Icon name="userplus" size={16} /> إضافة فرد</Btn>} /></Card>
+        <Card><Empty icon="users" title="مفيش أفراد لسه" sub="ضيف أعضاء فريقك بأسمائهم ومستواهم." action={<Btn onClick={() => setModal({ new: true })}><Icon name="userplus" size={16} /> إضافة فرد</Btn>} /></Card>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
           {data.members.map((m) => {
             const projs = data.assignments.filter((a) => a.memberId === m.id).map((a) => data.projects.find((p) => p.id === a.projectId)).filter(Boolean);
             const initials = m.name.trim().split(" ").slice(0, 2).map((w) => w[0]).join("");
+            const sn = SENIORITY[m.seniority] || SENIORITY.mid;
             return (
               <Card key={m.id}>
                 <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -510,7 +684,10 @@ function Team({ data, update }) {
                       <div style={{ fontWeight: 800, fontSize: 17 }}>{m.name}</div>
                       <div style={{ display: "flex", gap: 4 }}><IconBtn onClick={() => setModal({ ...m })}><Icon name="pencil" size={15} /></IconBtn><IconBtn danger onClick={() => remove(m.id)}><Icon name="trash" size={15} /></IconBtn></div>
                     </div>
-                    <Pill color={C.rose}>{ROLES[m.role] || m.role}</Pill>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                      <Pill color={C.rose}>{ROLES[m.role] || m.role}</Pill>
+                      <Pill color={sn.color}><Icon name="star" size={11} /> {sn.label}</Pill>
+                    </div>
                   </div>
                 </div>
                 <div style={{ marginTop: 12, fontSize: 13, color: C.inkSoft, display: "flex", flexDirection: "column", gap: 5 }}>
@@ -521,12 +698,9 @@ function Team({ data, update }) {
                 {m.notes && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 8, lineHeight: 1.6 }}>{m.notes}</div>}
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
                   <div style={{ fontSize: 12.5, fontWeight: 700, color: C.inkSoft, marginBottom: 8 }}>المشاريع المسؤول عنها</div>
-                  {data.projects.length === 0 ? <div style={{ fontSize: 12.5, color: C.inkSoft }}>ضيف مشاريع الأول عشان توزّعه عليها.</div> : (
+                  {data.projects.length === 0 ? <div style={{ fontSize: 12.5, color: C.inkSoft }}>ضيف مشاريع الأول.</div> : (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
-                      {data.projects.map((p) => {
-                        const on = projs.find((x) => x.id === p.id); const pl = PLATFORMS[p.platform] || PLATFORMS.other;
-                        return <button key={p.id} onClick={() => toggleAssign(m.id, p.id)} style={{ border: `1px solid ${on ? pl.color : C.line}`, background: on ? pl.color + "14" : "#fff", color: on ? pl.color : C.inkSoft, padding: "5px 10px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{on ? "✓ " : "+ "}{p.name}</button>;
-                      })}
+                      {data.projects.map((p) => { const on = projs.find((x) => x.id === p.id); const pl = PLATFORMS[p.platform] || PLATFORMS.other; return <button key={p.id} onClick={() => toggleAssign(m.id, p.id)} style={{ border: `1px solid ${on ? pl.color : C.line}`, background: on ? pl.color + "14" : "#fff", color: on ? pl.color : C.inkSoft, padding: "5px 10px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{on ? "✓ " : "+ "}{p.name}</button>; })}
                     </div>
                   )}
                 </div>
@@ -540,18 +714,21 @@ function Team({ data, update }) {
   );
 }
 function MemberForm({ initial, onSave, onClose }) {
-  const [f, setF] = useState(initial || { id: uid(), name: "", role: "social", email: "", phone: "", joinDate: "", notes: "" });
+  const [f, setF] = useState(initial || { id: uid(), name: "", role: "social", seniority: "mid", email: "", phone: "", joinDate: "", notes: "" });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
     <Modal title={initial ? "تعديل بيانات الفرد" : "فرد جديد في الفريق"} onClose={onClose}>
       <Field label="الاسم *"><input style={inputStyle} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="الاسم الكامل" /></Field>
-      <Field label="الدور"><select style={inputStyle} value={f.role} onChange={(e) => set("role", e.target.value)}>{Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="الدور"><select style={inputStyle} value={f.role} onChange={(e) => set("role", e.target.value)}>{Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+        <Field label="المستوى (Seniority)"><select style={inputStyle} value={f.seniority} onChange={(e) => set("seniority", e.target.value)}>{Object.entries(SENIORITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></Field>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="الإيميل"><input style={inputStyle} value={f.email} onChange={(e) => set("email", e.target.value)} placeholder="name@team.com" /></Field>
         <Field label="التليفون"><input style={inputStyle} value={f.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
       </div>
       <Field label="تاريخ الانضمام"><input type="date" style={inputStyle} value={f.joinDate} onChange={(e) => set("joinDate", e.target.value)} /></Field>
-      <Field label="ملاحظات"><textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical" }} value={f.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
+      <Field label="ملاحظات"><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical" }} value={f.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
       <div style={{ display: "flex", gap: 10, marginTop: 6 }}><Btn onClick={() => f.name.trim() && onSave(f)}>حفظ</Btn><Btn kind="line" onClick={onClose}>إلغاء</Btn></div>
     </Modal>
   );
@@ -560,7 +737,7 @@ function MemberForm({ initial, onSave, onClose }) {
 /* ===================== Performance ===================== */
 function Performance({ data, month, setMonth, update }) {
   const [modal, setModal] = useState(null);
-  const months = useMemo(() => { const s = new Set(data.kpis.map((k) => k.month)); s.add(nowMonth()); return [...s].sort().reverse(); }, [data.kpis]);
+  const months = useMemo(() => allMonths(data), [data.kpis]);
   const saveKpi = (rec) => { const ex = data.kpis.find((k) => k.id === rec.id); update({ ...data, kpis: ex ? data.kpis.map((k) => (k.id === rec.id ? rec : k)) : [...data.kpis, rec] }); setModal(null); };
   const removeKpi = (id) => update({ ...data, kpis: data.kpis.filter((k) => k.id !== id) });
   const scores = useMemo(() => teamScores(data, month), [data, month]);
@@ -569,34 +746,34 @@ function Performance({ data, month, setMonth, update }) {
   const canAdd = data.members.length && data.projects.length;
   return (
     <div>
-      <Header title="الأداء و الـKPIs" sub="سجّل أرقام كل فرد على كل حساب، وقارن الأداء" right={<div style={{ display: "flex", gap: 10 }}>
-        <MonthPicker months={months} month={month} setMonth={setMonth} />
-        <Btn onClick={() => canAdd && setModal({ new: true })} style={{ opacity: canAdd ? 1 : 0.5, cursor: canAdd ? "pointer" : "not-allowed" }}><Icon name="plus" size={16} /> تسجيل أداء</Btn>
-      </div>} />
-      {!canAdd && <Card style={{ marginBottom: 16, background: C.primarySoft, border: "none" }}><div style={{ color: C.primary, fontWeight: 700, fontSize: 14 }}>عشان تسجّل أداء، لازم يكون عندك فرد واحد على الأقل ومشروع واحد على الأقل.</div></Card>}
+      <Header title="الأداء و الـKPIs" sub="سجّل أرقام كل فرد على كل حساب — التقييم محسوب حسب المستوى" right={<><MonthPicker months={months} month={month} setMonth={setMonth} /><Btn onClick={() => canAdd && setModal({ new: true })} style={{ opacity: canAdd ? 1 : 0.5, cursor: canAdd ? "pointer" : "not-allowed" }}><Icon name="plus" size={16} /> تسجيل أداء</Btn></>} />
+      {!canAdd && <Card style={{ marginBottom: 16, background: C.primarySoft, border: "none" }}><div style={{ color: C.primary, fontWeight: 700, fontSize: 14 }}>عشان تسجّل أداء، لازم يكون عندك فرد واحد ومشروع واحد على الأقل.</div></Card>}
       {chartData.length > 0 && (
         <Card style={{ marginBottom: 16 }}>
           <CardTitle>مقارنة الأداء — {monthLabel(month)}</CardTitle>
           <Bars data={chartData} series={[{ k: "منشورات", color: C.primary }, { k: "تفاعل", color: C.green }]} />
           <Legend items={[{ color: C.primary, label: "منشورات" }, { color: C.green, label: "تفاعل %" }]} />
-          <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 6, textAlign: "center" }}>ارتفاع الأعمدة نسبي لأعلى قيمة، والرقم فوق كل عمود هو القيمة الحقيقية.</div>
         </Card>
       )}
       {scores.some((s) => s.count > 0) && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px,1fr))", gap: 14, marginBottom: 16 }}>
-          {scores.filter((s) => s.count > 0).map((s) => (
-            <Card key={s.member.id}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontWeight: 800, fontSize: 16 }}>{s.member.name}</div>
-                <div style={{ fontWeight: 800, color: C.primary, fontSize: 20 }}>{s.score}</div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <Mini label="منشورات" v={fmt(s.posts)} /><Mini label="محتوى" v={fmt(s.content)} />
-                <Mini label="تفاعل" v={s.engagement.toFixed(1) + "%"} /><Mini label="وصول" v={fmt(s.reach)} />
-                <Mini label="متابعين +" v={fmt(s.followers)} /><Mini label="التزام" v={s.onTime.toFixed(0) + "%"} />
-              </div>
-            </Card>
-          ))}
+          {scores.filter((s) => s.count > 0).map((s) => {
+            const sn = SENIORITY[s.member.seniority] || SENIORITY.mid;
+            return (
+              <Card key={s.member.id}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <div style={{ fontWeight: 800, fontSize: 16 }}>{s.member.name}</div>
+                  <div style={{ fontWeight: 800, color: C.primary, fontSize: 20 }}>{s.score}</div>
+                </div>
+                <div style={{ marginBottom: 12 }}><Pill color={sn.color}><Icon name="star" size={11} /> {sn.label}</Pill></div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <Mini label="منشورات" v={fmt(s.posts)} /><Mini label="محتوى" v={fmt(s.content)} />
+                  <Mini label="تفاعل" v={s.engagement.toFixed(1) + "%"} /><Mini label="وصول" v={fmt(s.reach)} />
+                  <Mini label="متابعين +" v={fmt(s.followers)} /><Mini label="التزام" v={s.onTime.toFixed(0) + "%"} />
+                </div>
+              </Card>
+            );
+          })}
         </div>
       )}
       <Card>
@@ -605,13 +782,11 @@ function Performance({ data, month, setMonth, update }) {
           <Empty icon="trending" title="مفيش أرقام للشهر ده" sub={canAdd ? "اضغط «تسجيل أداء» وابدأ تدخل أرقام الفريق." : "ضيف فريق ومشاريع الأول."} action={canAdd ? <Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> تسجيل أداء</Btn> : null} />
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 720 }}>
-              <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}>
-                {["الفرد", "الحساب", "منشورات", "محتوى", "تفاعل %", "وصول", "متابعين +", "التزام %", ""].map((h, i) => <th key={i} style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{h}</th>)}
-              </tr></thead>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 760 }}>
+              <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}>{["الفرد", "الحساب", "منشورات", "محتوى", "تفاعل %", "وصول", "متابعين +", "التزام %", ""].map((h, i) => <th key={i} style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
               <tbody>
                 {recs.map((k) => {
-                  const m = data.members.find((x) => x.id === k.memberId); const p = data.projects.find((x) => x.id === k.projectId); const pl = p ? PLATFORMS[p.platform] : null;
+                  const m = data.members.find((x) => x.id === k.memberId), p = data.projects.find((x) => x.id === k.projectId), pl = p ? PLATFORMS[p.platform] : null;
                   return (
                     <tr key={k.id} style={{ borderBottom: `1px solid ${C.line}` }}>
                       <td style={{ padding: "10px", fontWeight: 700 }}>{m ? m.name : "—"}</td>
@@ -632,9 +807,7 @@ function Performance({ data, month, setMonth, update }) {
     </div>
   );
 }
-function Mini({ label, v }) {
-  return <div style={{ background: C.bg, borderRadius: 10, padding: "8px 10px" }}><div style={{ fontSize: 11.5, color: C.inkSoft }}>{label}</div><div style={{ fontWeight: 800, fontSize: 15 }}>{v}</div></div>;
-}
+function Mini({ label, v }) { return <div style={{ background: C.bg, borderRadius: 10, padding: "8px 10px" }}><div style={{ fontSize: 11.5, color: C.inkSoft }}>{label}</div><div style={{ fontWeight: 800, fontSize: 15 }}>{v}</div></div>; }
 function KpiForm({ initial, data, month, onSave, onClose }) {
   const [f, setF] = useState(initial || { id: uid(), memberId: data.members[0]?.id || "", projectId: "", month, posts: "", content: "", engagement: "", reach: "", followers: "", onTime: "" });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -656,6 +829,140 @@ function KpiForm({ initial, data, month, onSave, onClose }) {
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 6 }}><Btn onClick={() => f.memberId && f.projectId && onSave(f)}>حفظ</Btn><Btn kind="line" onClick={onClose}>إلغاء</Btn></div>
     </Modal>
+  );
+}
+
+/* ===================== Reports ===================== */
+function Reports({ data, month, setMonth }) {
+  const months = useMemo(() => allMonths(data), [data.kpis]);
+  const scores = useMemo(() => teamScores(data, month), [data, month]);
+  const activeScores = scores.filter((s) => s.count > 0);
+  const projRows = data.projects.map((p) => ({ p, ach: projectAchievement(data, p, month) })).filter((r) => r.ach.count > 0);
+  const teamTrend = [...months].slice(0, 6).reverse().map((mn) => {
+    const recs = data.kpis.filter((k) => k.month === mn);
+    const eng = recs.length ? recs.reduce((a, r) => a + (+r.engagement || 0), 0) / recs.length : 0;
+    return { name: monthLabel(mn).split(" ")[0], posts: recs.reduce((a, r) => a + (+r.posts || 0), 0), eng: +eng.toFixed(1), followers: recs.reduce((a, r) => a + (+r.followers || 0), 0) };
+  });
+
+  const exportMembers = () => {
+    const rows = [["الفرد", "المستوى", "الدور", "عدد الحسابات", "منشورات", "محتوى", "تفاعل %", "وصول", "نمو متابعين", "التزام %", "درجة الأداء"]];
+    activeScores.forEach((s) => rows.push([s.member.name, SENIORITY[s.member.seniority]?.label || "", ROLES[s.member.role] || "", s.count, Math.round(s.posts), Math.round(s.content), +s.engagement.toFixed(1), Math.round(s.reach), Math.round(s.followers), +s.onTime.toFixed(0), s.score]));
+    downloadCSV(`اداء-الفريق-${month}.csv`, rows);
+  };
+  const exportProjects = () => {
+    const rows = [["المشروع", "العميل", "المنصّة", "منشورات/هدف", "تفاعل/هدف", "وصول/هدف", "متابعين/هدف", "نسبة الإنجاز %"]];
+    projRows.forEach(({ p, ach }) => {
+      const g = (key) => { const x = ach.perMetric.find((m) => m.key === key); return `${Math.round(x.actual * 10) / 10} / ${x.target || "—"}`; };
+      rows.push([p.name, p.client || "", PLATFORMS[p.platform]?.label || "", g("posts"), g("engagement"), g("reach"), g("followers"), ach.overall == null ? "—" : ach.overall]);
+    });
+    downloadCSV(`تقرير-المشاريع-${month}.csv`, rows);
+  };
+
+  const noData = activeScores.length === 0 && projRows.length === 0;
+  return (
+    <div>
+      <Header title="التقارير" sub={`ملخّص شامل قابل للتصدير — ${monthLabel(month)}`} right={<>
+        <MonthPicker months={months} month={month} setMonth={setMonth} />
+        <Btn kind="line" onClick={exportMembers}><Icon name="download" size={15} /> أداء الأفراد</Btn>
+        <Btn kind="line" onClick={exportProjects}><Icon name="download" size={15} /> المشاريع</Btn>
+        <Btn onClick={() => window.print()}><Icon name="print" size={15} /> طباعة / PDF</Btn>
+      </>} />
+      {noData ? <Card><Empty icon="report" title="مفيش بيانات للشهر ده" sub="سجّل أداء في تبويب الـKPIs الأول." /></Card> : (
+        <>
+          <Card style={{ marginBottom: 16 }}>
+            <CardTitle>الاتجاه العام للفريق (آخر الشهور)</CardTitle>
+            <LineDual data={teamTrend} series={[{ k: "posts", color: C.primary, label: "منشورات" }, { k: "eng", color: C.green, label: "تفاعل %" }, { k: "followers", color: C.amber, label: "متابعين" }]} />
+            <Legend items={[{ color: C.primary, label: "منشورات" }, { color: C.green, label: "تفاعل %" }, { color: C.amber, label: "نمو متابعين" }]} />
+          </Card>
+          <Card style={{ marginBottom: 16 }}>
+            <CardTitle>تقرير أداء الأفراد</CardTitle>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 760 }}>
+                <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}>{["الفرد", "المستوى", "حسابات", "منشورات", "محتوى", "تفاعل", "وصول", "متابعين +", "التزام", "الدرجة"].map((h, i) => <th key={i} style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {activeScores.map((s) => { const sn = SENIORITY[s.member.seniority] || SENIORITY.mid; return (
+                    <tr key={s.member.id} style={{ borderBottom: `1px solid ${C.line}` }}>
+                      <td style={{ padding: "10px", fontWeight: 700 }}>{s.member.name}</td>
+                      <td style={{ padding: "10px" }}><Pill color={sn.color}>{sn.label}</Pill></td>
+                      <td style={{ padding: "10px" }}>{s.count}</td><td style={{ padding: "10px" }}>{fmt(s.posts)}</td><td style={{ padding: "10px" }}>{fmt(s.content)}</td>
+                      <td style={{ padding: "10px" }}>{s.engagement.toFixed(1)}%</td><td style={{ padding: "10px" }}>{fmt(s.reach)}</td>
+                      <td style={{ padding: "10px" }}>{fmt(s.followers)}</td><td style={{ padding: "10px" }}>{s.onTime.toFixed(0)}%</td>
+                      <td style={{ padding: "10px", fontWeight: 800, color: C.primary }}>{s.score}</td>
+                    </tr>); })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+          <Card>
+            <CardTitle>تقرير المشاريع (الفعلي × الهدف)</CardTitle>
+            {projRows.length === 0 ? <Empty icon="folder" title="لا توجد مشاريع بأرقام هذا الشهر" sub="" /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {projRows.map(({ p, ach }) => {
+                  const pl = PLATFORMS[p.platform] || PLATFORMS.other;
+                  return (
+                    <div key={p.id} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontWeight: 800 }}>{p.name}</span><Pill color={pl.color}>{pl.label}</Pill>{p.client && <span style={{ fontSize: 12.5, color: C.inkSoft }}>· {p.client}</span>}</div>
+                        {ach.overall != null && <Pill color={achColor(ach.overall)}>{ach.overall}% — {achLabel(ach.overall)}</Pill>}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                        {ach.perMetric.map((x) => (
+                          <div key={x.key}>
+                            <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 4 }}>{x.label}</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <Bar pct={x.pct == null ? 0 : x.pct} color={achColor(x.pct)} height={6} />
+                              <span style={{ fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{metricVal(x.key, x.actual)}{x.target ? <span style={{ color: C.inkSoft }}> / {metricVal(x.key, x.target)}</span> : ""}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ===================== Settings (weights) ===================== */
+function Settings({ data, update }) {
+  const setW = (lvl, key, val) => { const v = val === "" ? 0 : Number(val); update({ ...data, weights: { ...data.weights, [lvl]: { ...data.weights[lvl], [key]: v } } }); };
+  const reset = () => { if (confirm("ترجّع كل الأوزان للوضع الافتراضي؟")) update({ ...data, weights: JSON.parse(JSON.stringify(DEFAULT_WEIGHTS)) }); };
+  return (
+    <div>
+      <Header title="أوزان التقييم" sub="حدّد إزاي كل مقياس بيأثر في درجة كل مستوى" right={<Btn kind="line" onClick={reset}>إعادة للافتراضي</Btn>} />
+      <Card style={{ marginBottom: 16, background: C.primarySoft, border: "none" }}>
+        <div style={{ color: C.ink, fontSize: 13.5, lineHeight: 1.8 }}>
+          الفكرة: نفس الأرقام بتتحسب بأوزان مختلفة حسب مستوى الفرد. الجونيور وزنه أعلى على <b>الكمية والتنفيذ</b> (منشورات/محتوى/التزام)، والسينيور وزنه أعلى على <b>التأثير</b> (تفاعل/وصول/متابعين). الأرقام نِسَب — مش لازم مجموعها ١٠٠ بالظبط، السيستم بيوازن تلقائيًا.
+        </div>
+      </Card>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+        {Object.entries(SENIORITY).map(([lvl, sn]) => {
+          const w = data.weights[lvl] || {};
+          const sum = METRIC_KEYS.reduce((s, k) => s + (+w[k] || 0), 0);
+          return (
+            <Card key={lvl}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <Pill color={sn.color}><Icon name="star" size={12} /> {sn.label}</Pill>
+                <span style={{ fontSize: 12, color: C.inkSoft }}>المجموع: <b style={{ color: C.ink }}>{sum}</b></span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {METRICS.map((mt) => (
+                  <div key={mt.key} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 13, flex: 1 }}>{mt.label}</span>
+                    <input type="number" min="0" step="1" value={w[mt.key] ?? 0} onChange={(e) => setW(lvl, mt.key, e.target.value)} style={{ ...inputStyle, width: 70, padding: "7px 10px", textAlign: "center" }} />
+                  </div>
+                ))}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
