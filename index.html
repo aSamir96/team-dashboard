@@ -348,7 +348,7 @@ function App() {
       <aside style={{ width: 248, background: C.sidebar, color: "#fff", padding: "22px 16px", display: "flex", flexDirection: "column", gap: 4, position: "sticky", top: 0, height: "100vh", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 18px" }}>
           <div style={{ width: 38, height: 38, borderRadius: 11, background: C.primary, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon name="award" size={20} color="#fff" /></div>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>مركز التحكم</div><div style={{ fontSize: 11, color: "#A8AAC8" }}>سوشيال ميديا ريبورتنج</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Ocoda Hive</div><div style={{ fontSize: 11, color: "#A8AAC8" }}>سوشيال ميديا ريبورتنج</div></div>
         </div>
         {nav.map((n) => <button key={n.k} onClick={() => setTab(n.k)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 13px", borderRadius: 11, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, textAlign: "right", background: tab === n.k ? C.primary : "transparent", color: tab === n.k ? "#fff" : "#C5C7E0" }}><Icon name={n.icon} size={18} /> {n.label}</button>)}
         <div style={{ marginTop: "auto", fontSize: 11.5, color: "#6E7196", padding: "0 8px", lineHeight: 1.7 }}>البيانات على المتصفّح ده. اعمل نسخة احتياطية من «الإعدادات».</div>
