@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ocoda Hive — نظام السوشيال ميديا ريبورتنج</title>
+<title>Ocoda Hive — لوحة تحكم السوشيال ميديا</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -159,6 +159,23 @@ function LineDual({ data, series, height = 230 }) {
       {series.map((s) => { const max = Math.max(1, ...data.map((d) => +d[s.k] || 0)); const pts = data.map((d, i) => `${x(i)},${P.t + ih - ((+d[s.k] || 0) / max) * ih}`).join(" "); return <polyline key={s.k} points={pts} fill="none" stroke={s.color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />; })}
       {series.map((s) => { const max = Math.max(1, ...data.map((d) => +d[s.k] || 0)); return data.map((d, i) => <circle key={s.k + i} cx={x(i)} cy={P.t + ih - ((+d[s.k] || 0) / max) * ih} r="3.5" fill={s.color}><title>{`${d.name} — ${s.label}: ${d[s.k]}`}</title></circle>); })}
       {data.map((d, i) => <text key={i} x={x(i)} y={H - 8} fontSize="12" fill={C.inkSoft} textAnchor="middle" fontFamily="Cairo">{d.name}</text>)}
+    </svg>
+  );
+}
+function LineMulti({ data, series, height = 230, pct }) {
+  if (!data.length || !series.length) return null;
+  const W = 620, H = height, P = { l: 34, r: 16, t: 16, b: 26 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const x = (i) => (data.length === 1 ? P.l + iw / 2 : P.l + i * iw / (data.length - 1));
+  const max = Math.max(1, ...series.flatMap((s) => data.map((d) => +d[s.k] || 0)));
+  const y = (v) => P.t + ih - ((+v || 0) / max) * ih;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="xMidYMid meet" style={{ display: "block" }}>
+      {[0, .25, .5, .75, 1].map((t, i) => <line key={i} x1={P.l} x2={W - P.r} y1={P.t + ih * t} y2={P.t + ih * t} stroke={C.line} />)}
+      {[0, .5, 1].map((t, i) => <text key={"y" + i} x={P.l - 6} y={P.t + ih * (1 - t) + 4} fontSize="10" fill={C.inkSoft} textAnchor="end" fontFamily="Cairo">{pct ? Math.round(max * t) + "%" : fmtShort(max * t)}</text>)}
+      {series.map((s) => { const pts = data.map((d, i) => `${x(i)},${y(d[s.k])}`).join(" "); return <polyline key={s.k} points={pts} fill="none" stroke={s.color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />; })}
+      {series.map((s) => data.map((d, i) => <circle key={s.k + i} cx={x(i)} cy={y(d[s.k])} r="3.2" fill={s.color}><title>{`${d.name} — ${s.label}: ${pct ? (Math.round((+d[s.k] || 0) * 10) / 10) + "%" : fmt(d[s.k])}`}</title></circle>))}
+      {data.map((d, i) => <text key={i} x={x(i)} y={H - 8} fontSize="11.5" fill={C.inkSoft} textAnchor="middle" fontFamily="Cairo">{d.name}</text>)}
     </svg>
   );
 }
@@ -367,14 +384,29 @@ function App() {
 
 /* ===================== Dashboard ===================== */
 function Dashboard({ data, month, setMonth, update, setTab }) {
+  const [acctMetric, setAcctMetric] = useState(null);
+  const [contribMetric, setContribMetric] = useState(null);
   const months = useMemo(() => allMonths(data), [data.kpis]);
   const totals = useMemo(() => aggregate(data, data.kpis.filter((k) => k.month === month)), [data, month]);
   const sums = sumMetrics(data), pcts = pctMetrics(data);
   const sumA = sums[0], sumB = sums[1], pctA = pcts[0];
-  const byPlatform = useMemo(() => { if (!sumA) return []; const map = {}; data.kpis.filter((k) => k.month === month).forEach((k) => { const p = data.projects.find((x) => x.id === k.projectId); const key = p ? primaryPlatform(p) : "other"; map[key] = (map[key] || 0) + (Number(k[sumA.key]) || 0); }); return Object.entries(map).map(([k, v]) => ({ name: PLATFORMS[k]?.label || k, value: v, color: PLATFORMS[k]?.color || C.inkSoft })); }, [data, month, sumA]);
+  const months6 = useMemo(() => [...months].slice(0, 6).reverse(), [months]);
+  const amKey = acctMetric || (sumA && sumA.key) || (data.metrics[0] && data.metrics[0].key);
+  const amObj = data.metrics.find((m) => m.key === amKey);
+  const acct = useMemo(() => {
+    if (!amObj) return { rows: [], series: [] };
+    const ranked = data.projects.map((p) => ({ p, tot: months6.reduce((s, mn) => s + (accountAgg(data, p.id, mn)[amKey] || 0), 0) })).filter((r) => r.tot > 0).sort((a, b) => b.tot - a.tot).slice(0, 6);
+    const rows = months6.map((mn) => { const row = { name: monthLabel(mn).split(" ")[0] }; ranked.forEach((r) => { const v = accountAgg(data, r.p.id, mn)[amKey] || 0; row[r.p.id] = amObj.pct ? +v.toFixed(1) : Math.round(v); }); return row; });
+    const series = ranked.map((r, i) => ({ k: r.p.id, color: METRIC_COLORS[i % METRIC_COLORS.length], label: r.p.name }));
+    return { rows, series };
+  }, [data, months6, amKey, amObj]);
+  const sumsAll = sumMetrics(data);
+  const cmKey = contribMetric || (sumA && sumA.key) || (sumsAll[0] && sumsAll[0].key);
+  const cmObj = data.metrics.find((m) => m.key === cmKey);
+  const contrib = useMemo(() => { if (!cmObj) return []; return data.members.map((m, i) => ({ name: m.name, value: Math.round(memberAgg(data, m.id, month)[cmKey] || 0), color: METRIC_COLORS[i % METRIC_COLORS.length] })).filter((x) => x.value > 0).sort((a, b) => b.value - a.value); }, [data, month, cmKey, cmObj]);
+  const ctotal = contrib.reduce((a, b) => a + b.value, 0);
   const scores = useMemo(() => teamScores(data, month), [data, month]);
   const top = scores.filter((s) => s.count > 0).slice(0, 5);
-  const trend = useMemo(() => [...months].slice(0, 6).reverse().map((m) => { const a = aggregate(data, data.kpis.filter((k) => k.month === m)); return { name: monthLabel(m).split(" ")[0], s: sumA ? a[sumA.key] : 0, p: pctA ? +a[pctA.key].toFixed(1) : 0 }; }), [data, months, sumA, pctA]);
   const acctPerf = useMemo(() => data.projects.map((p) => ({ p, overall: projectOverall(data, p, month), agg: accountAgg(data, p.id, month) })).filter((r) => r.agg.count > 0), [data, month]);
   const acctRank = [...acctPerf].filter((r) => r.overall != null).sort((a, b) => b.overall - a.overall).map((r) => ({ name: r.p.name, pct: r.overall, label: r.overall + "%", color: achColor(r.overall) }));
   const topByMetric = sumA ? [...acctPerf].sort((a, b) => (b.agg[sumA.key] || 0) - (a.agg[sumA.key] || 0)).slice(0, 6) : [];
@@ -397,8 +429,14 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
             {sumB && stat(sumB.label + " (الشهر)", fmtShort(totals[sumB.key]), "userplus", "#8254E5")}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 16, marginBottom: 16 }}>
-            <Card><CardTitle>الاتجاه العام (آخر ٦ شهور)</CardTitle><LineDual data={trend} series={[{ k: "s", color: C.primary, label: sumA?.label }, { k: "p", color: C.green, label: pctA?.label }]} /><Legend items={[{ color: C.primary, label: sumA?.label || "" }, { color: C.green, label: pctA?.label || "" }]} /></Card>
-            <Card><CardTitle>{sumA?.label} حسب المنصّة</CardTitle>{byPlatform.length ? <Donut data={byPlatform} /> : <Empty icon="file" title="لا توجد بيانات" sub="سجّل KPIs للشهر ده." />}<div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10, justifyContent: "center" }}>{byPlatform.map((e, i) => <Pill key={i} color={e.color}>{e.name} · {fmtShort(e.value)}</Pill>)}</div></Card>
+            <Card>
+              <CardTitle right={data.metrics.length > 1 ? <select value={amKey} onChange={(e) => setAcctMetric(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{data.metrics.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}</select> : null}>أداء الحسابات عبر الشهور</CardTitle>
+              {acct.series.length ? <><LineMulti data={acct.rows} series={acct.series} pct={!!(amObj && amObj.pct)} /><Legend items={acct.series.map((s) => ({ color: s.color, label: s.label }))} /><div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 6, textAlign: "center" }}>أعلى ٦ حسابات في «{amObj ? amObj.label : ""}» — كلهم على نفس السكيل للمقارنة.</div></> : <Empty icon="trending" title="مفيش بيانات كفاية" sub="سجّل أرقام لأكتر من شهر عشان المقارنة تظهر." />}
+            </Card>
+            <Card>
+              <CardTitle right={sumsAll.length > 1 ? <select value={cmKey} onChange={(e) => setContribMetric(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{sumsAll.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}</select> : null}>مساهمة الفريق</CardTitle>
+              {contrib.length ? <><Donut data={contrib} /><div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 6, textAlign: "center" }}>نصيب كل فرد من إجمالي «{cmObj ? cmObj.label : ""}» — {monthLabel(month).split(" ")[0]}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10, justifyContent: "center" }}>{contrib.map((e, i) => <Pill key={i} color={e.color}>{e.name} · {ctotal ? Math.round((e.value / ctotal) * 100) : 0}%</Pill>)}</div></> : <Empty icon="users" title="لا توجد بيانات" sub="سجّل أرقام للفريق هذا الشهر." />}
+            </Card>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
