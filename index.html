@@ -805,8 +805,8 @@ function Team({ data, update, month, setMonth }) {
   const save = (member) => { const exists = data.members.find((x) => x.id === member.id); update({ ...data, members: exists ? data.members.map((x) => (x.id === member.id ? member : x)) : [...data.members, member] }); setModal(null); };
   const remove = (id) => { if (!confirm("هتمسح الفرد ده وكل أرقامه. متأكد؟")) return; update({ ...data, members: data.members.filter((x) => x.id !== id), assignments: data.assignments.filter((a) => a.memberId !== id), kpis: data.kpis.filter((k) => k.memberId !== id) }); setSelected(null); };
 
-  if (selected) { const mb = data.members.find((m) => m.id === selected); if (mb) return <MemberDetail data={data} member={mb} month={month} setMonth={setMonth} onBack={() => setSelected(null)} onEdit={() => setModal({ ...mb })} modal={modal} setModal={setModal} save={save} />; }
   const scores = useMemo(() => { const s = {}; teamScores(data, month).forEach((x) => (s[x.member.id] = x)); return s; }, [data, month]);
+  if (selected) { const mb = data.members.find((m) => m.id === selected); if (mb) return <MemberDetail data={data} member={mb} month={month} setMonth={setMonth} onBack={() => setSelected(null)} onEdit={() => setModal({ ...mb })} modal={modal} setModal={setModal} save={save} />; }
   return (
     <div>
       <Header title="الفريق" sub="كل أفراد الفريق ومستوياتهم والمشاريع المسؤولين عنها" right={<Btn onClick={() => setModal({ new: true })}><Icon name="userplus" size={16} /> إضافة فرد</Btn>} />
