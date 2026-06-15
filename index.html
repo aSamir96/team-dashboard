@@ -1064,7 +1064,7 @@ function Settings({ data, update }) {
       </Card>
 
       <Card style={{ marginBottom: 16 }}>
-        <CardTitle>معاملات الليفل (التقييم العادل)</CardTitle>
+        <CardTitle>معاملات الليفل (الرحمة في التقييم)</CardTitle>
         <div style={{ fontSize: 12.5, color: C.inkSoft, marginBottom: 14, lineHeight: 1.7 }}>حجم الشغل والأرقام بتتحسب بنفس الوزن للكل. المعامل ده بيظبط التقييم حسب المستوى: لمّا الجونيور يجيب أرقام زي السينيور، بياخد درجة أعلى لأن المعامل بتاعه أكبر. <b>أكبر من ١ = رحمة أكتر (درجة أعلى)</b>، وأقل من ١ = تقييم أصرم.</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
           {Object.entries(SENIORITY).map(([k, v]) => (
