@@ -64,11 +64,11 @@ const SENIORITY = {
 const OBJECTIVES = { awareness: "وعي بالعلامة", growth: "نمو الجمهور", sales: "مبيعات / تحويلات", engagement: "تفاعل" };
 const PRIORITIES = { high: { label: "عالية", color: "#E0518A" }, med: { label: "متوسطة", color: "#E8A33D" }, low: { label: "منخفضة", color: "#1FAE7C" } };
 const DEFAULT_METRICS = [
-  { key: "posts", label: "عدد المنشورات", agg: "sum", pct: false },
-  { key: "engagement", label: "معدل التفاعل %", agg: "avg", pct: true },
-  { key: "reach", label: "الوصول / الانطباعات", agg: "sum", pct: false },
-  { key: "followers", label: "نمو المتابعين", agg: "sum", pct: false },
-  { key: "onTime", label: "الالتزام بالمواعيد %", agg: "avg", pct: true },
+  { key: "posts", label: "عدد المنشورات", agg: "sum", pct: false, kind: "monthly" },
+  { key: "engagement", label: "معدل التفاعل %", agg: "avg", pct: true, kind: "monthly" },
+  { key: "reach", label: "الوصول / الانطباعات", agg: "sum", pct: false, kind: "monthly" },
+  { key: "followers", label: "إجمالي المتابعين", agg: "sum", pct: false, kind: "snapshot" },
+  { key: "onTime", label: "الالتزام بالمواعيد %", agg: "avg", pct: true, kind: "monthly" },
 ];
 const DEFAULT_LENIENCY = { junior: 1.3, mid: 1.0, senior: 0.82 };
 const METRIC_COLORS = ["#5B4BE5", "#1FAE7C", "#E8A33D", "#E0518A", "#8254E5", "#3DA8E8", "#E2533B", "#13B5C9", "#C39B2E", "#6E7CE0"];
@@ -87,13 +87,16 @@ const assignedIdsFor = (data, pid) => data.assignments.filter((a) => a.projectId
 const memberInitials = (name) => (name || "?").trim().split(" ").slice(0, 2).map((w) => w[0]).join("");
 const sumMetrics = (data) => data.metrics.filter((m) => m.agg !== "avg");
 const pctMetrics = (data) => data.metrics.filter((m) => m.pct);
+const monthlyMetrics = (data) => data.metrics.filter((m) => m.kind !== "snapshot");
+const snapshotMetrics = (data) => data.metrics.filter((m) => m.kind === "snapshot");
 const pctChange = (cur, prev) => { cur = Number(cur) || 0; prev = Number(prev) || 0; if (prev === 0) return cur === 0 ? 0 : null; return Math.round(((cur - prev) / prev) * 100); };
 
 /* ===================== migration ===================== */
-const emptyData = () => ({ projects: [], members: [], assignments: [], kpis: [], metrics: JSON.parse(JSON.stringify(DEFAULT_METRICS)), leniency: { ...DEFAULT_LENIENCY }, reportNotes: {} });
+const emptyData = () => ({ projects: [], members: [], assignments: [], kpis: [], platformStats: [], metrics: JSON.parse(JSON.stringify(DEFAULT_METRICS)), leniency: { ...DEFAULT_LENIENCY }, reportNotes: {} });
 function migrate(d) {
   if (!d) return emptyData();
-  d.metrics = (d.metrics && d.metrics.length ? d.metrics : JSON.parse(JSON.stringify(DEFAULT_METRICS))).map((m) => ({ agg: "sum", pct: false, ...m }));
+  d.metrics = (d.metrics && d.metrics.length ? d.metrics : JSON.parse(JSON.stringify(DEFAULT_METRICS))).map((m) => ({ agg: "sum", pct: false, kind: "monthly", ...m }));
+  d.platformStats = d.platformStats || [];
   d.leniency = { ...DEFAULT_LENIENCY, ...(d.leniency || {}) };
   d.reportNotes = d.reportNotes || {};
   d.projects = (d.projects || []).map((p) => {
@@ -227,18 +230,29 @@ function aggregate(data, recs) {
 }
 function memberAgg(data, memberId, month) { return aggregate(data, data.kpis.filter((k) => k.memberId === memberId && k.month === month)); }
 function accountAgg(data, projectId, month) { return aggregate(data, data.kpis.filter((k) => k.projectId === projectId && k.month === month)); }
+/* ---- platform-level account numbers (the real account state per platform) ---- */
+function platformStat(data, projectId, platform, month) { return (data.platformStats || []).find((s) => s.projectId === projectId && s.platform === platform && s.month === month) || null; }
+function hasPlatformStats(data, projectId, month) { return (data.platformStats || []).some((s) => s.projectId === projectId && s.month === month); }
+function accountActual(data, projectId, month) {
+  const recs = (data.platformStats || []).filter((s) => s.projectId === projectId && s.month === month);
+  if (!recs.length) { const a = accountAgg(data, projectId, month); a.platforms = 0; return a; }
+  const out = { count: recs.length, platforms: recs.length };
+  data.metrics.forEach((mt) => { const vals = recs.map((r) => Number(r[mt.key]) || 0); const s = vals.reduce((a, b) => a + b, 0); out[mt.key] = mt.agg === "avg" ? (recs.length ? s / recs.length : 0) : s; });
+  return out;
+}
 function teamScores(data, month) {
+  const metrics = monthlyMetrics(data);
   const aggs = data.members.map((m) => ({ member: m, ...memberAgg(data, m.id, month) }));
-  const maxes = {}; data.metrics.forEach((mt) => (maxes[mt.key] = Math.max(1, ...aggs.map((a) => a[mt.key] || 0))));
+  const maxes = {}; metrics.forEach((mt) => (maxes[mt.key] = Math.max(1, ...aggs.map((a) => a[mt.key] || 0))));
   const len = data.leniency || DEFAULT_LENIENCY;
   return aggs.map((a) => {
-    const base = a.count ? data.metrics.reduce((s, mt) => s + ((a[mt.key] || 0) / maxes[mt.key]) * 100, 0) / (data.metrics.length || 1) : 0;
+    const base = a.count ? metrics.reduce((s, mt) => s + ((a[mt.key] || 0) / maxes[mt.key]) * 100, 0) / (metrics.length || 1) : 0;
     const factor = len[a.member.seniority] ?? 1;
     return { ...a, base: Math.round(base), score: a.count ? Math.min(100, Math.round(base * factor)) : 0 };
   }).sort((x, y) => y.score - x.score);
 }
 function goalAchievement(data, project, month, goal) {
-  const act = accountAgg(data, project.id, month); const t = goal.targets || {};
+  const act = accountActual(data, project.id, month); const t = goal.targets || {};
   const per = data.metrics.map((mt) => { const actual = act[mt.key] || 0, target = Number(t[mt.key]) || 0; const pct = target > 0 ? Math.round((actual / target) * 100) : null; return { key: mt.key, label: mt.label, metric: mt, actual, target, pct }; });
   const withT = per.filter((x) => x.pct != null);
   const overall = withT.length ? Math.round(withT.reduce((a, x) => a + Math.min(100, x.pct), 0) / withT.length) : null;
@@ -313,8 +327,8 @@ function PlatformPills({ p }) { return <>{(p.platforms || []).map((pf) => { cons
 function Delta({ pct }) { if (pct == null) return <Pill color={C.inkSoft}>جديد</Pill>; const c = deltaColor(pct); return <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontWeight: 800, fontSize: 13, color: c }}><Icon name={pct > 0 ? "up" : pct < 0 ? "down" : "fwd"} size={13} />{pct > 0 ? "+" : ""}{pct}%</span>; }
 
 /* dynamic metric table cells */
-function MetricHeadCells({ data }) { return <>{data.metrics.map((m) => <th key={m.key} style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{m.label}</th>)}</>; }
-function MetricCells({ data, rec, pad = "10px" }) { return <>{data.metrics.map((m) => <td key={m.key} style={{ padding: pad }}>{fmtMetric(m, rec[m.key])}</td>)}</>; }
+function MetricHeadCells({ data, metrics }) { return <>{(metrics || monthlyMetrics(data)).map((m) => <th key={m.key} style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{m.label}</th>)}</>; }
+function MetricCells({ data, rec, metrics, pad = "10px" }) { return <>{(metrics || monthlyMetrics(data)).map((m) => <td key={m.key} style={{ padding: pad }}>{fmtMetric(m, rec[m.key])}</td>)}</>; }
 
 /* ===================== sample ===================== */
 function sampleData() {
@@ -346,6 +360,18 @@ function sampleData() {
       { id: uid(), memberId: "u2", projectId: "p1", month: d(1), posts: 10, engagement: 4.6, reach: 33000, followers: 480, onTime: 96 },
       { id: uid(), memberId: "u3", projectId: "p2", month: d(1), posts: 8, engagement: 9.8, reach: 180000, followers: 4200, onTime: 85 },
     ],
+    platformStats: [
+      { id: uid(), projectId: "p1", platform: "instagram", month: mth, posts: 14, engagement: 6.5, reach: 60000, followers: 38000, onTime: 95 },
+      { id: uid(), projectId: "p1", platform: "tiktok", month: mth, posts: 8, engagement: 9.0, reach: 140000, followers: 22000, onTime: 90 },
+      { id: uid(), projectId: "p1", platform: "instagram", month: d(1), posts: 12, engagement: 5.9, reach: 52000, followers: 36500, onTime: 92 },
+      { id: uid(), projectId: "p1", platform: "tiktok", month: d(1), posts: 7, engagement: 8.4, reach: 120000, followers: 20500, onTime: 88 },
+      { id: uid(), projectId: "p2", platform: "tiktok", month: mth, posts: 10, engagement: 8.5, reach: 180000, followers: 30000, onTime: 84 },
+      { id: uid(), projectId: "p2", platform: "youtube", month: mth, posts: 4, engagement: 5.2, reach: 90000, followers: 12000, onTime: 80 },
+      { id: uid(), projectId: "p2", platform: "tiktok", month: d(1), posts: 8, engagement: 8.0, reach: 150000, followers: 27000, onTime: 82 },
+      { id: uid(), projectId: "p2", platform: "youtube", month: d(1), posts: 3, engagement: 4.8, reach: 70000, followers: 10800, onTime: 78 },
+      { id: uid(), projectId: "p3", platform: "facebook", month: mth, posts: 16, engagement: 3.8, reach: 62000, followers: 25000, onTime: 92 },
+      { id: uid(), projectId: "p3", platform: "facebook", month: d(1), posts: 14, engagement: 3.5, reach: 55000, followers: 24200, onTime: 90 },
+    ],
   });
 }
 
@@ -357,8 +383,8 @@ function App() {
   const update = (next) => { setData(next); persist(next); };
   const nav = [
     { k: "dash", label: "لوحة التحكم", icon: "dashboard" }, { k: "projects", label: "المشاريع والحسابات", icon: "folder" },
-    { k: "team", label: "الفريق", icon: "users" }, { k: "perf", label: "الأداء و الـKPIs", icon: "trending" },
-    { k: "reports", label: "التقارير", icon: "report" }, { k: "settings", label: "الإعدادات", icon: "settings" },
+    { k: "accounts", label: "أرقام المنصّات", icon: "globe" }, { k: "team", label: "الفريق", icon: "users" },
+    { k: "perf", label: "أداء الفريق", icon: "trending" }, { k: "reports", label: "التقارير", icon: "report" }, { k: "settings", label: "الإعدادات", icon: "settings" },
   ];
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.ink, display: "flex" }}>
@@ -373,6 +399,7 @@ function App() {
       <main style={{ flex: 1, padding: "26px 30px", minWidth: 0 }}>
         {tab === "dash" && <Dashboard data={data} month={month} setMonth={setMonth} update={update} setTab={setTab} />}
         {tab === "projects" && <Projects data={data} update={update} month={month} setMonth={setMonth} />}
+        {tab === "accounts" && <PlatformNumbers data={data} update={update} month={month} setMonth={setMonth} />}
         {tab === "team" && <Team data={data} update={update} month={month} setMonth={setMonth} />}
         {tab === "perf" && <Performance data={data} month={month} setMonth={setMonth} update={update} />}
         {tab === "reports" && <Reports data={data} month={month} setMonth={setMonth} />}
@@ -395,8 +422,8 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
   const amObj = data.metrics.find((m) => m.key === amKey);
   const acct = useMemo(() => {
     if (!amObj) return { rows: [], series: [] };
-    const ranked = data.projects.map((p) => ({ p, tot: months6.reduce((s, mn) => s + (accountAgg(data, p.id, mn)[amKey] || 0), 0) })).filter((r) => r.tot > 0).sort((a, b) => b.tot - a.tot).slice(0, 6);
-    const rows = months6.map((mn) => { const row = { name: monthLabel(mn).split(" ")[0] }; ranked.forEach((r) => { const v = accountAgg(data, r.p.id, mn)[amKey] || 0; row[r.p.id] = amObj.pct ? +v.toFixed(1) : Math.round(v); }); return row; });
+    const ranked = data.projects.map((p) => ({ p, tot: months6.reduce((s, mn) => s + (accountActual(data, p.id, mn)[amKey] || 0), 0) })).filter((r) => r.tot > 0).sort((a, b) => b.tot - a.tot).slice(0, 6);
+    const rows = months6.map((mn) => { const row = { name: monthLabel(mn).split(" ")[0] }; ranked.forEach((r) => { const v = accountActual(data, r.p.id, mn)[amKey] || 0; row[r.p.id] = amObj.pct ? +v.toFixed(1) : Math.round(v); }); return row; });
     const series = ranked.map((r, i) => ({ k: r.p.id, color: METRIC_COLORS[i % METRIC_COLORS.length], label: r.p.name }));
     return { rows, series };
   }, [data, months6, amKey, amObj]);
@@ -407,7 +434,7 @@ function Dashboard({ data, month, setMonth, update, setTab }) {
   const ctotal = contrib.reduce((a, b) => a + b.value, 0);
   const scores = useMemo(() => teamScores(data, month), [data, month]);
   const top = scores.filter((s) => s.count > 0).slice(0, 5);
-  const acctPerf = useMemo(() => data.projects.map((p) => ({ p, overall: projectOverall(data, p, month), agg: accountAgg(data, p.id, month) })).filter((r) => r.agg.count > 0), [data, month]);
+  const acctPerf = useMemo(() => data.projects.map((p) => ({ p, overall: projectOverall(data, p, month), agg: accountActual(data, p.id, month) })).filter((r) => r.agg.count > 0), [data, month]);
   const acctRank = [...acctPerf].filter((r) => r.overall != null).sort((a, b) => b.overall - a.overall).map((r) => ({ name: r.p.name, pct: r.overall, label: r.overall + "%", color: achColor(r.overall) }));
   const topByMetric = sumA ? [...acctPerf].sort((a, b) => (b.agg[sumA.key] || 0) - (a.agg[sumA.key] || 0)).slice(0, 6) : [];
   const maxMetric = Math.max(1, ...topByMetric.map((r) => r.agg[sumA?.key] || 0));
@@ -489,7 +516,7 @@ function Projects({ data, update, month, setMonth }) {
   const remove = (id) => { if (!confirm("هتمسح المشروع ده وكل البيانات المرتبطة بيه. متأكد؟")) return; update({ ...data, projects: data.projects.filter((x) => x.id !== id), assignments: data.assignments.filter((a) => a.projectId !== id), kpis: data.kpis.filter((k) => k.projectId !== id) }); setSelected(null); };
 
   if (reportFor) { const proj = data.projects.find((p) => p.id === reportFor); if (proj) return <ReportDeck data={data} update={update} project={proj} month={month} setMonth={setMonth} onBack={() => setReportFor(null)} />; }
-  if (selected) { const proj = data.projects.find((p) => p.id === selected); if (proj) return <ProjectDetail data={data} project={proj} month={month} setMonth={setMonth} onBack={() => setSelected(null)} onEdit={() => setModal({ ...proj })} onReport={() => setReportFor(proj.id)} modal={modal} setModal={setModal} save={save} />; }
+  if (selected) { const proj = data.projects.find((p) => p.id === selected); if (proj) return <ProjectDetail data={data} update={update} project={proj} month={month} setMonth={setMonth} onBack={() => setSelected(null)} onEdit={() => setModal({ ...proj })} onReport={() => setReportFor(proj.id)} modal={modal} setModal={setModal} save={save} />; }
   const list = data.projects.filter((p) => p.name.includes(q) || (p.handle || "").includes(q) || (p.client || "").includes(q));
   return (
     <div>
@@ -527,11 +554,14 @@ function Projects({ data, update, month, setMonth }) {
   );
 }
 
-function ProjectDetail({ data, project, month, setMonth, onBack, onEdit, onReport, modal, setModal, save }) {
-  const months = useMemo(() => allMonths(data), [data.kpis]);
+function ProjectDetail({ data, update, project, month, setMonth, onBack, onEdit, onReport, modal, setModal, save }) {
+  const months = useMemo(() => allMonths(data), [data.kpis, data.platformStats]);
+  const [statModal, setStatModal] = useState(null);
   const pr = PRIORITIES[project.priority] || PRIORITIES.med;
   const teamRows = assignedIdsFor(data, project.id).map((id) => { const m = data.members.find((x) => x.id === id); if (!m) return null; const rec = data.kpis.find((k) => k.memberId === m.id && k.projectId === project.id && k.month === month); return { member: m, rec }; }).filter(Boolean);
   const goals = project.goals || [];
+  const saveStat = (rec) => { const idx = (data.platformStats || []).findIndex((s) => s.id === rec.id || (s.projectId === rec.projectId && s.platform === rec.platform && s.month === rec.month)); const platformStats = idx >= 0 ? data.platformStats.map((s, i) => (i === idx ? { ...rec, id: data.platformStats[i].id } : s)) : [...(data.platformStats || []), rec]; update({ ...data, platformStats }); setStatModal(null); };
+  const removeStat = (id) => { if (!confirm("مسح أرقام المنصّة دي للشهر ده؟")) return; update({ ...data, platformStats: data.platformStats.filter((s) => s.id !== id) }); };
   return (
     <div>
       <div className="no-print" style={{ marginBottom: 14, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -550,6 +580,10 @@ function ProjectDetail({ data, project, month, setMonth, onBack, onEdit, onRepor
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>{project.links.map((l, i) => <a key={i} href={l.url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700, textDecoration: "none", background: C.bg, padding: "7px 12px", borderRadius: 999 }}><Icon name="globe" size={14} /> {l.label || l.url}</a>)}</div>
         </Card>
       )}
+      <Card style={{ marginBottom: 16 }}>
+        <CardTitle right={<Btn size="sm" onClick={() => setStatModal({ projectId: project.id, platform: (project.platforms || [])[0] || "", month })}><Icon name="plus" size={14} /> تسجيل أرقام</Btn>}>أرقام المنصّات — {monthLabel(month)}</CardTitle>
+        <PlatformStatsView data={data} project={project} month={month} onAdd={(pf) => setStatModal({ projectId: project.id, platform: pf, month })} onEdit={(pf, rec) => setStatModal({ ...rec })} onDelete={removeStat} />
+      </Card>
       <Card style={{ marginBottom: 16 }}>
         <CardTitle>الأهداف × الفعلي — {monthLabel(month)}</CardTitle>
         {goals.length === 0 ? <Empty icon="target" title="مفيش أهداف محددة" sub="اضغط «تعديل» وأضف هدف أو أكتر." /> : (
@@ -575,7 +609,7 @@ function ProjectDetail({ data, project, month, setMonth, onBack, onEdit, onRepor
               <tbody>{teamRows.map(({ member, rec }) => { const sn = SENIORITY[member.seniority] || SENIORITY.mid; return (
                 <tr key={member.id} style={{ borderBottom: `1px solid ${C.line}` }}>
                   <td style={{ padding: "10px", fontWeight: 700 }}>{member.name}</td><td style={{ padding: "10px" }}><Pill color={sn.color}>{sn.label}</Pill></td>
-                  {rec ? <MetricCells data={data} rec={rec} /> : <td colSpan={data.metrics.length} style={{ padding: "10px", color: C.inkSoft }}>لم يُسجّل أداء هذا الشهر</td>}
+                  {rec ? <MetricCells data={data} rec={rec} /> : <td colSpan={monthlyMetrics(data).length} style={{ padding: "10px", color: C.inkSoft }}>لم يُسجّل أداء هذا الشهر</td>}
                 </tr>); })}</tbody>
             </table>
           </div>
@@ -583,6 +617,7 @@ function ProjectDetail({ data, project, month, setMonth, onBack, onEdit, onRepor
         {project.notes && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 14, lineHeight: 1.7, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>{project.notes}</div>}
       </Card>
       {modal && !modal.new && <ProjectForm data={data} initial={modal} members={data.members} assignedIds={assignedIdsFor(data, modal.id)} onSave={save} onClose={() => setModal(null)} />}
+      {statModal && <PlatformStatForm data={data} month={month} initial={statModal} onSave={saveStat} onClose={() => setStatModal(null)} />}
     </div>
   );
 }
@@ -686,89 +721,98 @@ function Slide({ children, kicker, title }) {
   </div>;
 }
 function ReportDeck({ data, update, project, month, setMonth, onBack }) {
-  const months = useMemo(() => allMonths(data), [data.kpis]);
-  const prev = prevMonth(month);
-  const cur = accountAgg(data, project.id, month);
-  const pre = accountAgg(data, project.id, prev);
-  const allMon = useMemo(() => { const s = new Set(data.kpis.filter((k) => k.projectId === project.id).map((k) => k.month)); s.add(month); return [...s].sort(); }, [data, project, month]);
-  const trendMon = allMon.slice(-6);
+  const months = useMemo(() => allMonths(data), [data.kpis, data.platformStats]);
   const [idx, setIdx] = useState(0);
+  const pm = prevMonth(month);
+  const cur = accountActual(data, project.id, month);
+  const pre = accountActual(data, project.id, pm);
+  const platforms = project.platforms || [];
+  const statMon = useMemo(() => { const s = new Set((data.platformStats || []).filter((x) => x.projectId === project.id).map((x) => x.month)); s.add(month); return [...s].sort().slice(-6); }, [data, project, month]);
+  const hasStats = hasPlatformStats(data, project.id, month);
   const note = (slide, kind) => data.reportNotes[`${project.id}::${month}::${slide}::${kind}`] || "";
   const saveNote = (slide, kind, val) => { const key = `${project.id}::${month}::${slide}::${kind}`; if ((data.reportNotes[key] || "") === val) return; update({ ...data, reportNotes: { ...data.reportNotes, [key]: val } }); };
   const improved = data.metrics.filter((m) => { const pc = pctChange(cur[m.key], pre[m.key]); return pc != null && pc > 0; }).length;
   const declined = data.metrics.filter((m) => { const pc = pctChange(cur[m.key], pre[m.key]); return pc != null && pc < 0; }).length;
   const team = assignedIdsFor(data, project.id).map((id) => data.members.find((m) => m.id === id)).filter(Boolean);
+  const mm = monthlyMetrics(data);
 
   const slides = [];
-  // overview
+  // cover
   slides.push(
-    <Slide key="ov" kicker="تقرير الأداء الشامل" title={`${project.name} — ${monthLabel(month)}`}>
+    <Slide key="ov" kicker="تقرير الأداء الشامل — Ocoda Hive" title={`${project.name} — ${monthLabel(month)}`}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><PlatformPills p={project} />{project.client && <Pill color={C.inkSoft}>العميل: {project.client}</Pill>}<Pill color={C.primary}>{OBJECTIVES[project.objective] || ""}</Pill></div>
-      <div style={{ fontSize: 13.5, color: C.inkSoft, marginBottom: 16, lineHeight: 1.8 }}>مقارنة بين <b style={{ color: C.ink }}>{monthLabel(prev)}</b> و <b style={{ color: C.ink }}>{monthLabel(month)}</b>. النِسَب الخضراء = تحسّن، الحمراء = تراجع.</div>
+      <div style={{ fontSize: 13.5, color: C.inkSoft, marginBottom: 16, lineHeight: 1.8 }}>مقارنة إجمالي الحساب بين <b style={{ color: C.ink }}>{monthLabel(pm)}</b> و <b style={{ color: C.ink }}>{monthLabel(month)}</b>. الشرائح اللي بعدها بتفصّل كل منصّة لوحدها. الأخضر = تحسّن، الأحمر = تراجع.</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 }}>
         {data.metrics.map((m) => { const pc = pctChange(cur[m.key], pre[m.key]); return (
           <div key={m.key} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 14 }}>
-            <div style={{ fontSize: 12.5, color: C.inkSoft, marginBottom: 6 }}>{m.label}</div>
+            <div style={{ fontSize: 12.5, color: C.inkSoft, marginBottom: 6 }}>{m.label}{m.kind === "snapshot" ? " (الإجمالي)" : ""}</div>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}><div style={{ fontSize: 21, fontWeight: 800 }}>{fmtMetric(m, cur[m.key])}</div><Delta pct={pc} /></div>
             <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 4 }}>الشهر السابق: {fmtMetric(m, pre[m.key])}</div>
           </div>); })}
       </div>
       <div style={{ background: C.bg, borderRadius: 12, padding: 14, marginBottom: 16, fontSize: 13.5, lineHeight: 1.8 }}>
-        <b><Icon name="bulb" size={15} color={C.amber} /> قراءة سريعة:</b> خلال هذه الفترة تحسّن <b style={{ color: C.green }}>{improved}</b> من المقاييس وتراجع <b style={{ color: C.rose }}>{declined}</b>، على {cur.count} سجل أداء. الشرائح التالية تشرح كل مقياس بالتفصيل مع رسم بياني واتجاه.
+        <b><Icon name="bulb" size={15} color={C.amber} /> قراءة سريعة:</b> على مستوى الحساب كله، تحسّن <b style={{ color: C.green }}>{improved}</b> مقياس وتراجع <b style={{ color: C.rose }}>{declined}</b>{hasStats ? "" : " — (الأرقام من إجمالي الفريق؛ سجّل أرقام المنصّات لتفصيل أدق)"}.
       </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-        <NoteBox label="ملاحظات عامة" icon="pencil" value={note("overview", "notes")} onSave={(v) => saveNote("overview", "notes", v)} placeholder="اكتب ملاحظاتك على الأداء العام للحساب…" />
-        <NoteBox label="ترشيحات وخطوات قادمة" icon="bulb" value={note("overview", "recos")} onSave={(v) => saveNote("overview", "recos", v)} placeholder="اكتب توصياتك للشهر الجاي…" />
+        <NoteBox label="ملاحظات عامة" icon="pencil" value={note("overview", "notes")} onSave={(v) => saveNote("overview", "notes", v)} placeholder="ملاحظاتك على الأداء العام…" />
+        <NoteBox label="ترشيحات وخطوات قادمة" icon="bulb" value={note("overview", "recos")} onSave={(v) => saveNote("overview", "recos", v)} placeholder="توصياتك للفترة الجاية…" />
       </div>
     </Slide>
   );
-  // per metric
-  data.metrics.forEach((m, mi) => {
-    const c = cur[m.key] || 0, p = pre[m.key] || 0, pc = pctChange(c, p), mx = Math.max(1, c, p);
-    const trend = trendMon.map((mn) => { const a = accountAgg(data, project.id, mn); return { name: monthLabel(mn).split(" ")[0], v: m.pct ? +(a[m.key] || 0).toFixed(1) : Math.round(a[m.key] || 0) }; });
-    const col = METRIC_COLORS[mi % METRIC_COLORS.length];
+  // per platform
+  platforms.forEach((pf, pi) => {
+    const pl = PLATFORMS[pf] || PLATFORMS.other;
+    const rec = platformStat(data, project.id, pf, month);
+    const prev = platformStat(data, project.id, pf, pm);
+    const col = pl.color;
+    const sumM = sumMetrics(data)[0], pctM = pctMetrics(data)[0];
+    const trend = statMon.map((mn) => { const r = platformStat(data, project.id, pf, mn); return { name: monthLabel(mn).split(" ")[0], s: r && sumM ? (sumM.pct ? +(+r[sumM.key] || 0).toFixed(1) : Math.round(+r[sumM.key] || 0)) : 0, p: r && pctM ? +(+r[pctM.key] || 0).toFixed(1) : 0 }; });
+    const imp = rec ? data.metrics.filter((m) => { const pc = pctChange(rec[m.key], prev ? prev[m.key] : 0); return pc != null && pc > 0; }).length : 0;
+    const dec = rec ? data.metrics.filter((m) => { const pc = pctChange(rec[m.key], prev ? prev[m.key] : 0); return pc != null && pc < 0; }).length : 0;
     slides.push(
-      <Slide key={m.key} kicker={`مقياس ${mi + 1} من ${data.metrics.length}`} title={m.label}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.1fr", gap: 18, marginBottom: 18 }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
-              <div><div style={{ fontSize: 12, color: C.inkSoft }}>قبل ({monthLabel(prev).split(" ")[0]})</div><div style={{ fontSize: 24, fontWeight: 800, color: C.inkSoft }}>{fmtMetric(m, p)}</div></div>
-              <Icon name="fwd" size={22} color={C.inkSoft} style={{ transform: "scaleX(-1)" }} />
-              <div><div style={{ fontSize: 12, color: C.inkSoft }}>بعد ({monthLabel(month).split(" ")[0]})</div><div style={{ fontSize: 28, fontWeight: 800, color: col }}>{fmtMetric(m, c)}</div></div>
-              <div style={{ marginRight: "auto" }}><Delta pct={pc} /></div>
+      <Slide key={"plat" + pf} kicker={`منصّة ${pi + 1} من ${platforms.length}`} title={pl.label}>
+        {!rec ? (
+          <Empty icon="globe" title={`مفيش أرقام مسجّلة لـ${pl.label}`} sub={`سجّل أرقام المنصّة دي في ${monthLabel(month).split(" ")[0]} من تبويب «أرقام المنصّات» أو من صفحة الحساب.`} />
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1.05fr 1fr", gap: 18, marginBottom: 16 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {data.metrics.map((m) => { const c = +rec[m.key] || 0, p = prev ? +prev[m.key] || 0 : 0, pc = pctChange(c, p); return (
+                  <div key={m.key} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12 }}>
+                    <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 5 }}>{m.label}{m.kind === "snapshot" ? " (حالي)" : ""}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}><span style={{ fontWeight: 800, fontSize: 19, color: col }}>{fmtMetric(m, c)}</span><Delta pct={pc} /></div>
+                    <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 3 }}>قبل: {fmtMetric(m, p)}</div>
+                  </div>); })}
+              </div>
+              <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: C.inkSoft, marginBottom: 6 }}>الاتجاه عبر الشهور</div>
+                <LineDual data={trend} series={[{ k: "s", color: col, label: sumM ? sumM.label : "" }, { k: "p", color: C.green, label: pctM ? pctM.label : "" }]} height={180} />
+                <Legend items={[{ color: col, label: sumM ? sumM.label : "" }, { color: C.green, label: pctM ? pctM.label : "" }]} />
+              </div>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ width: 40, fontSize: 12, color: C.inkSoft, fontWeight: 700 }}>قبل</span><Bar pct={(p / mx) * 100} color={C.inkSoft} height={14} /><span style={{ width: 70, textAlign: "left", fontWeight: 800, fontSize: 12.5 }}>{fmtMetric(m, p)}</span></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ width: 40, fontSize: 12, color: C.inkSoft, fontWeight: 700 }}>بعد</span><Bar pct={(c / mx) * 100} color={col} height={14} /><span style={{ width: 70, textAlign: "left", fontWeight: 800, fontSize: 12.5 }}>{fmtMetric(m, c)}</span></div>
+            <div style={{ background: C.bg, borderRadius: 12, padding: 14, marginBottom: 16, fontSize: 13.5, lineHeight: 1.8 }}>
+              <b><Icon name="bulb" size={15} color={col} /> شرح الأرقام:</b> على {pl.label} خلال {monthLabel(month).split(" ")[0]}، تحسّن <b style={{ color: C.green }}>{imp}</b> مقياس وتراجع <b style={{ color: C.rose }}>{dec}</b> مقارنة بالشهر السابق. {sumM && prev ? explainMetric(sumM, +rec[sumM.key] || 0, +prev[sumM.key] || 0, pctChange(+rec[sumM.key] || 0, +prev[sumM.key] || 0)) : ""}
             </div>
-          </div>
-          <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 800, color: C.inkSoft, marginBottom: 6 }}>الاتجاه عبر الشهور</div>
-            <LineDual data={trend} series={[{ k: "v", color: col, label: m.label }]} height={170} />
-          </div>
-        </div>
-        <div style={{ background: C.bg, borderRadius: 12, padding: 14, marginBottom: 16, fontSize: 13.5, lineHeight: 1.8 }}>
-          <b><Icon name="bulb" size={15} color={col} /> شرح الأرقام:</b> {explainMetric(m, c, p, pc)}
-        </div>
+          </>
+        )}
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-          <NoteBox label="ملاحظات" icon="pencil" value={note(m.key, "notes")} onSave={(v) => saveNote(m.key, "notes", v)} placeholder={`ملاحظاتك على ${m.label}…`} />
-          <NoteBox label="ترشيحات" icon="bulb" value={note(m.key, "recos")} onSave={(v) => saveNote(m.key, "recos", v)} placeholder="توصياتك لتحسين هذا المقياس…" />
+          <NoteBox label="ملاحظات" icon="pencil" value={note("plat::" + pf, "notes")} onSave={(v) => saveNote("plat::" + pf, "notes", v)} placeholder={`ملاحظاتك على ${pl.label}…`} />
+          <NoteBox label="ترشيحات" icon="bulb" value={note("plat::" + pf, "recos")} onSave={(v) => saveNote("plat::" + pf, "recos", v)} placeholder={`توصياتك لتحسين ${pl.label}…`} />
         </div>
       </Slide>
     );
   });
-  // team contribution
+  // team
   slides.push(
-    <Slide key="team" kicker="مساهمة الفريق" title="مين عمل إيه على الحساب">
-      {team.length === 0 ? <Empty icon="users" title="مفيش فريق متعيّن" sub="حدّد الفريق من صفحة المشروع." /> : (
+    <Slide key="team" kicker="مساهمة الفريق" title="مين شغّال على الحساب">
+      {team.length === 0 ? <Empty icon="users" title="مفيش فريق متعيّن" sub="حدّد الفريق من صفحة الحساب." /> : (
         <div style={{ overflowX: "auto", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 640 }}>
-            <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}><th style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}` }}>الفرد</th><th style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}` }}>المستوى</th><MetricHeadCells data={data} /></tr></thead>
-            <tbody>{team.map((mb) => { const rec = data.kpis.find((k) => k.memberId === mb.id && k.projectId === project.id && k.month === month); const sn = SENIORITY[mb.seniority] || SENIORITY.mid; return (
-              <tr key={mb.id} style={{ borderBottom: `1px solid ${C.line}` }}><td style={{ padding: "10px", fontWeight: 700 }}>{mb.name}</td><td style={{ padding: "10px" }}><Pill color={sn.color}>{sn.label}</Pill></td>{rec ? <MetricCells data={data} rec={rec} /> : <td colSpan={data.metrics.length} style={{ padding: "10px", color: C.inkSoft }}>لم يُسجّل أداء</td>}</tr>); })}
-              <tr style={{ background: C.bg, fontWeight: 800 }}><td style={{ padding: "10px" }} colSpan={2}>إجمالي الحساب</td>{data.metrics.map((m) => <td key={m.key} style={{ padding: "10px" }}>{fmtMetric(m, cur[m.key])}</td>)}</tr>
-            </tbody>
+            <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}><th style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}` }}>الفرد</th><th style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}` }}>المستوى</th><MetricHeadCells data={data} metrics={mm} /></tr></thead>
+            <tbody>{team.map((mb) => { const r = data.kpis.find((k) => k.memberId === mb.id && k.projectId === project.id && k.month === month); const sn = SENIORITY[mb.seniority] || SENIORITY.mid; return (
+              <tr key={mb.id} style={{ borderBottom: `1px solid ${C.line}` }}><td style={{ padding: "10px", fontWeight: 700 }}>{mb.name}</td><td style={{ padding: "10px" }}><Pill color={sn.color}>{sn.label}</Pill></td>{r ? <MetricCells data={data} rec={r} metrics={mm} /> : <td colSpan={mm.length} style={{ padding: "10px", color: C.inkSoft }}>لم يُسجّل أداء</td>}</tr>); })}</tbody>
           </table>
+          <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 8 }}>دي مساهمة الأفراد (شغل الشهر)، منفصلة عن أرقام المنصّات الحقيقية فوق.</div>
         </div>
       )}
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
@@ -795,6 +839,116 @@ function ReportDeck({ data, update, project, month, setMonth, onBack }) {
         <Btn kind="line" onClick={() => setIdx((i) => Math.min(slides.length - 1, i + 1))} style={{ opacity: idx === slides.length - 1 ? .5 : 1 }}>التالي <Icon name="back" size={15} /></Btn>
       </div>
     </div>
+  );
+}
+
+
+/* ===================== Platform Numbers (per-platform account state) ===================== */
+function DeltaInline({ m, cur, prev }) {
+  const pc = pctChange(cur, prev);
+  if (pc == null) return <span style={{ fontSize: 11.5, color: C.inkSoft, fontWeight: 700 }}>جديد</span>;
+  const c = deltaColor(pc);
+  return <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontWeight: 800, fontSize: 12, color: c }}><Icon name={pc > 0 ? "up" : pc < 0 ? "down" : "fwd"} size={12} />{pc > 0 ? "+" : ""}{pc}%</span>;
+}
+function PlatformStatsView({ data, project, month, onAdd, onEdit, onDelete }) {
+  const pm = prevMonth(month);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {(project.platforms || []).map((pf) => {
+        const pl = PLATFORMS[pf] || PLATFORMS.other;
+        const rec = platformStat(data, project.id, pf, month);
+        const prev = platformStat(data, project.id, pf, pm);
+        return (
+          <div key={pf} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 14, borderRight: `4px solid ${pl.color}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: rec ? 12 : 0, flexWrap: "wrap", gap: 8 }}>
+              <Pill color={pl.color}>{pl.label}</Pill>
+              <div className="no-print" style={{ display: "flex", gap: 6 }}>
+                <Btn kind={rec ? "line" : "ghost"} size="sm" onClick={() => (rec ? onEdit(pf, rec) : onAdd(pf))}><Icon name={rec ? "pencil" : "plus"} size={14} /> {rec ? "تعديل الأرقام" : "تسجيل أرقام"}</Btn>
+                {rec && onDelete && <IconBtn danger onClick={() => onDelete(rec.id)}><Icon name="trash" size={14} /></IconBtn>}
+              </div>
+            </div>
+            {!rec ? <div style={{ fontSize: 12.5, color: C.inkSoft }}>لسه مفيش أرقام مسجّلة للمنصّة دي في {monthLabel(month).split(" ")[0]}.</div> : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                {data.metrics.map((m) => (
+                  <div key={m.key} style={{ background: C.bg, borderRadius: 10, padding: "9px 11px" }}>
+                    <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 3 }}>{m.label}{m.kind === "snapshot" ? " · حالي" : ""}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
+                      <span style={{ fontWeight: 800, fontSize: 16 }}>{fmtMetric(m, rec[m.key])}</span>
+                      <DeltaInline m={m} cur={rec[m.key]} prev={prev ? prev[m.key] : 0} />
+                    </div>
+                  </div>))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+function PlatformNumbers({ data, update, month, setMonth }) {
+  const months = useMemo(() => allMonths(data), [data.kpis, data.platformStats]);
+  const [modal, setModal] = useState(null);
+  const save = (rec) => {
+    const idx = (data.platformStats || []).findIndex((s) => s.id === rec.id || (s.projectId === rec.projectId && s.platform === rec.platform && s.month === rec.month));
+    const platformStats = idx >= 0 ? data.platformStats.map((s, i) => (i === idx ? { ...rec, id: data.platformStats[i].id } : s)) : [...(data.platformStats || []), rec];
+    update({ ...data, platformStats }); setModal(null);
+  };
+  const remove = (id) => { if (!confirm("مسح أرقام المنصّة دي للشهر ده؟")) return; update({ ...data, platformStats: data.platformStats.filter((s) => s.id !== id) }); };
+  return (
+    <div>
+      <Header title="أرقام المنصّات" sub="سجّل الأرقام الحقيقية لكل حساب على كل منصّة كل شهر — والنظام يحسب الزيادة/النقصان لوحده" right={<><MonthPicker months={months} month={month} setMonth={setMonth} /><Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> تسجيل أرقام</Btn></>} />
+      {data.projects.length === 0 ? (
+        <Card><Empty icon="globe" title="محتاج حسابات الأول" sub="ضيف مشاريع/حسابات من تبويب «المشاريع»." /></Card>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {data.projects.map((p) => (
+            <Card key={p.id}>
+              <CardTitle right={<span style={{ fontSize: 12.5, color: C.inkSoft }}>{monthLabel(month)}</span>}><span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>{p.name}{p.client && <Pill color={C.inkSoft}>{p.client}</Pill>}</span></CardTitle>
+              <PlatformStatsView data={data} project={p} month={month}
+                onAdd={(pf) => setModal({ projectId: p.id, platform: pf, month })}
+                onEdit={(pf, rec) => setModal({ ...rec })}
+                onDelete={remove} />
+            </Card>
+          ))}
+        </div>
+      )}
+      {modal && <PlatformStatForm data={data} month={month} initial={modal.new ? null : modal} onSave={save} onClose={() => setModal(null)} />}
+    </div>
+  );
+}
+function PlatformStatForm({ data, month, initial, onSave, onClose }) {
+  const isEdit = !!(initial && initial.id);
+  const base = initial ? { id: initial.id || uid(), projectId: initial.projectId || "", platform: initial.platform || "", month: initial.month || month, ...initial } : { id: uid(), projectId: "", platform: "", month };
+  base.id = base.id || uid();
+  const [f, setF] = useState(() => { const o = { ...base }; data.metrics.forEach((m) => { if (o[m.key] == null) o[m.key] = ""; }); return o; });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const project = data.projects.find((p) => p.id === f.projectId);
+  const platformOpts = project ? project.platforms : [];
+  const submit = () => {
+    if (!f.projectId || !f.platform) { alert("اختر الحساب والمنصّة."); return; }
+    const rec = { id: f.id, projectId: f.projectId, platform: f.platform, month: f.month };
+    data.metrics.forEach((m) => (rec[m.key] = Number(f[m.key]) || 0));
+    onSave(rec);
+  };
+  const pm = prevMonth(f.month);
+  const prevRec = (f.projectId && f.platform) ? platformStat(data, f.projectId, f.platform, pm) : null;
+  return (
+    <Modal wide title={isEdit ? "تعديل أرقام المنصّة" : "تسجيل أرقام منصّة"} onClose={onClose}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="الحساب *"><select style={inputStyle} value={f.projectId} onChange={(e) => { set("projectId", e.target.value); set("platform", ""); }}><option value="">اختر…</option>{data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+        <Field label="المنصّة *"><select style={inputStyle} value={f.platform} onChange={(e) => set("platform", e.target.value)}><option value="">اختر…</option>{platformOpts.map((pf) => <option key={pf} value={pf}>{PLATFORMS[pf]?.label || pf}</option>)}</select>{f.projectId && platformOpts.length === 0 && <div style={{ fontSize: 11.5, color: C.amber, marginTop: 4 }}>الحساب ده مفيهوش منصّات. عدّله الأول.</div>}</Field>
+        <Field label="الشهر"><input type="month" style={inputStyle} value={f.month} onChange={(e) => set("month", e.target.value)} /></Field>
+      </div>
+      <div style={{ fontSize: 12.5, color: C.inkSoft, margin: "2px 0 10px", lineHeight: 1.7 }}>اكتب الأرقام الحقيقية للمنصّة دي في الشهر ده. المقاييس المعلّمة «حالي» (زي المتابعين) اكتب فيها <b>العدد الإجمالي الحالي</b>، والنظام يحسب الزيادة عن الشهر اللي فات تلقائيًا.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        {data.metrics.map((m) => (
+          <Field key={m.key} label={m.label + (m.kind === "snapshot" ? " (العدد الحالي)" : "")}>
+            <input type="number" min="0" step="any" style={inputStyle} value={f[m.key]} onChange={(e) => set(m.key, e.target.value)} placeholder="0" />
+            {prevRec && <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 3 }}>الشهر السابق: {fmtMetric(m, prevRec[m.key])}</div>}
+          </Field>))}
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 6 }}><Btn onClick={submit}>حفظ</Btn><Btn kind="line" onClick={onClose}>إلغاء</Btn></div>
+    </Modal>
   );
 }
 
@@ -861,7 +1015,7 @@ function MemberDetail({ data, member, month, setMonth, onBack, onEdit, modal, se
         </Card>
         <Card>
           <CardTitle>إجمالي {monthLabel(month)}</CardTitle>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>{data.metrics.map((m) => <Mini key={m.key} label={m.label} v={fmtMetric(m, agg[m.key])} />)}</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>{monthlyMetrics(data).map((m) => <Mini key={m.key} label={m.label} v={fmtMetric(m, agg[m.key])} />)}</div>
           <CardTitle>الاتجاه (آخر ٦ شهور)</CardTitle>
           <LineDual data={trend} series={[{ k: "s", color: C.primary, label: sumA?.label }, { k: "p", color: C.green, label: pctA?.label }]} height={180} />
           <Legend items={[{ color: C.primary, label: sumA?.label || "" }, { color: C.green, label: pctA?.label || "" }]} />
@@ -875,7 +1029,7 @@ function MemberDetail({ data, member, month, setMonth, onBack, onEdit, modal, se
               <thead><tr style={{ color: C.inkSoft, textAlign: "right" }}><th style={{ padding: "8px 10px", fontWeight: 700, borderBottom: `1px solid ${C.line}` }}>الحساب</th><MetricHeadCells data={data} /></tr></thead>
               <tbody>
                 {rows.map(({ rec, project }) => <tr key={rec.id} style={{ borderBottom: `1px solid ${C.line}` }}><td style={{ padding: "10px", fontWeight: 700 }}>{project.name}</td><MetricCells data={data} rec={rec} /></tr>)}
-                <tr style={{ background: C.bg, fontWeight: 800 }}><td style={{ padding: "10px" }}>الإجمالي</td>{data.metrics.map((m) => <td key={m.key} style={{ padding: "10px" }}>{fmtMetric(m, agg[m.key])}</td>)}</tr>
+                <tr style={{ background: C.bg, fontWeight: 800 }}><td style={{ padding: "10px" }}>الإجمالي</td>{monthlyMetrics(data).map((m) => <td key={m.key} style={{ padding: "10px" }}>{fmtMetric(m, agg[m.key])}</td>)}</tr>
               </tbody>
             </table>
           </div>
@@ -917,11 +1071,11 @@ function Performance({ data, month, setMonth, update }) {
   const removeKpi = (id) => { if (!confirm("مسح السجل ده؟")) return; update({ ...data, kpis: data.kpis.filter((k) => k.id !== id) }); };
   const scores = useMemo(() => teamScores(data, month), [data, month]);
   const active = scores.filter((s) => s.count > 0);
-  const chartData = active.map((s) => { const o = { name: s.member.name.split(" ")[0] }; data.metrics.forEach((m) => (o[m.key] = s[m.key])); return o; });
-  const series = data.metrics.map((m, i) => ({ k: m.key, color: METRIC_COLORS[i % METRIC_COLORS.length], label: m.label, pct: m.pct }));
+  const chartData = active.map((s) => { const o = { name: s.member.name.split(" ")[0] }; monthlyMetrics(data).forEach((m) => (o[m.key] = s[m.key])); return o; });
+  const series = monthlyMetrics(data).map((m, i) => ({ k: m.key, color: METRIC_COLORS[i % METRIC_COLORS.length], label: m.label, pct: m.pct }));
   return (
     <div>
-      <Header title="الأداء و الـKPIs" sub="سجّل أرقام كل فرد على كل حساب — والدرجة بتتحسب حسب الليفل" right={<><MonthPicker months={months} month={month} setMonth={setMonth} /><Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> تسجيل أداء</Btn></>} />
+      <Header title="أداء الفريق" sub="شغل كل فرد على كل حساب (أرقام شهرية) — والدرجة بتتحسب حسب الليفل. ده منفصل عن «أرقام المنصّات» الحقيقية." right={<><MonthPicker months={months} month={month} setMonth={setMonth} /><Btn onClick={() => setModal({ new: true })}><Icon name="plus" size={16} /> تسجيل أداء</Btn></>} />
       {data.members.length === 0 || data.projects.length === 0 ? (
         <Card><Empty icon="trending" title="محتاج فريق ومشاريع الأول" sub="ضيف أعضاء ومشاريع عشان تبدأ تسجّل الأرقام." /></Card>
       ) : (
@@ -935,7 +1089,7 @@ function Performance({ data, month, setMonth, update }) {
             {active.map((s) => { const sn = SENIORITY[s.member.seniority] || SENIORITY.mid; return (
               <Card key={s.member.id}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><div style={{ fontWeight: 800 }}>{s.member.name}</div><Pill color={sn.color}>{sn.label}</Pill></div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>{data.metrics.map((m) => <Mini key={m.key} label={m.label} v={fmtMetric(m, s[m.key])} />)}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>{monthlyMetrics(data).map((m) => <Mini key={m.key} label={m.label} v={fmtMetric(m, s[m.key])} />)}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ fontSize: 12, color: C.inkSoft, fontWeight: 700 }}>الدرجة</span><Bar pct={s.score} color={C.primary} /><span style={{ fontWeight: 800, color: C.primary, width: 32, textAlign: "left" }}>{s.score}</span></div>
               </Card>); })}
           </div>
@@ -977,7 +1131,7 @@ function KpiForm({ data, month, initial, onSave, onClose }) {
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 800, color: C.inkSoft, margin: "6px 0 10px" }}>المقاييس (تقدر تضيف مقاييس جديدة من «الإعدادات»)</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-        {data.metrics.map((m) => <Field key={m.key} label={m.label}><input type="number" min="0" step="any" style={inputStyle} value={f[m.key]} onChange={(e) => set(m.key, e.target.value)} placeholder="0" /></Field>)}
+        {monthlyMetrics(data).map((m) => <Field key={m.key} label={m.label}><input type="number" min="0" step="any" style={inputStyle} value={f[m.key]} onChange={(e) => set(m.key, e.target.value)} placeholder="0" /></Field>)}
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 6 }}><Btn onClick={submit}>حفظ</Btn><Btn kind="line" onClick={onClose}>إلغاء</Btn></div>
     </Modal>
@@ -989,8 +1143,8 @@ function Reports({ data, month, setMonth }) {
   const months = useMemo(() => allMonths(data), [data.kpis]);
   const scores = useMemo(() => teamScores(data, month), [data, month]);
   const active = scores.filter((s) => s.count > 0);
-  const exportMembers = () => { const head = ["الفرد", "الدور", "المستوى", "عدد الحسابات", ...data.metrics.map((m) => m.label), "الأداء الخام", "الدرجة"]; const rows = [head, ...active.map((s) => [s.member.name, ROLES[s.member.role] || s.member.role, (SENIORITY[s.member.seniority] || {}).label, s.count, ...data.metrics.map((m) => Math.round((s[m.key] || 0) * 100) / 100), s.base, s.score])]; downloadCSV(`تقرير-الفريق-${month}.csv`, rows); };
-  const exportDetailed = () => { const head = ["الفرد", "الحساب", "الشهر", ...data.metrics.map((m) => m.label)]; const rows = [head]; data.kpis.filter((k) => k.month === month).forEach((k) => { const mb = data.members.find((m) => m.id === k.memberId), pj = data.projects.find((p) => p.id === k.projectId); rows.push([mb ? mb.name : "—", pj ? pj.name : "—", k.month, ...data.metrics.map((m) => k[m.key] ?? 0)]); }); downloadCSV(`تفصيلي-${month}.csv`, rows); };
+  const exportMembers = () => { const head = ["الفرد", "الدور", "المستوى", "عدد الحسابات", ...monthlyMetrics(data).map((m) => m.label), "الأداء الخام", "الدرجة"]; const rows = [head, ...active.map((s) => [s.member.name, ROLES[s.member.role] || s.member.role, (SENIORITY[s.member.seniority] || {}).label, s.count, ...monthlyMetrics(data).map((m) => Math.round((s[m.key] || 0) * 100) / 100), s.base, s.score])]; downloadCSV(`تقرير-الفريق-${month}.csv`, rows); };
+  const exportDetailed = () => { const head = ["الفرد", "الحساب", "الشهر", ...monthlyMetrics(data).map((m) => m.label)]; const rows = [head]; data.kpis.filter((k) => k.month === month).forEach((k) => { const mb = data.members.find((m) => m.id === k.memberId), pj = data.projects.find((p) => p.id === k.projectId); rows.push([mb ? mb.name : "—", pj ? pj.name : "—", k.month, ...monthlyMetrics(data).map((m) => k[m.key] ?? 0)]); }); downloadCSV(`تفصيلي-${month}.csv`, rows); };
   return (
     <div>
       <Header title="التقارير" sub="ملخّصات شهرية جاهزة للتصدير والطباعة" right={<><MonthPicker months={months} month={month} setMonth={setMonth} /><Btn kind="line" onClick={() => window.print()}><Icon name="print" size={15} /> طباعة</Btn></>} />
@@ -1050,13 +1204,13 @@ function Settings({ data, update }) {
       <Header title="الإعدادات" sub="تحكّم في مقاييس الأداء، معاملات الليفل، والنسخ الاحتياطي" />
 
       <Card style={{ marginBottom: 16 }}>
-        <CardTitle right={<Btn size="sm" onClick={() => setMForm({ new: true, key: slug(), label: "", agg: "sum", pct: false })}><Icon name="plus" size={14} /> مقياس جديد</Btn>}>مقاييس الأداء (KPIs مفتوحة)</CardTitle>
+        <CardTitle right={<Btn size="sm" onClick={() => setMForm({ new: true, key: slug(), label: "", agg: "sum", pct: false, kind: "monthly" })}><Icon name="plus" size={14} /> مقياس جديد</Btn>}>مقاييس الأداء (KPIs مفتوحة)</CardTitle>
         <div style={{ fontSize: 12.5, color: C.inkSoft, marginBottom: 12, lineHeight: 1.7 }}>دي المقاييس اللي بتتسجّل لكل فرد على كل حساب. تقدر تضيف أو تشيل مقاييس حسب احتياج كل حساب. أي مقياس جديد بيظهر تلقائيًا في تسجيل الأداء، الأهداف، التقارير، والسلايدات.</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.metrics.map((m, i) => (
             <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: `1px solid ${C.line}`, borderRadius: 10 }}>
               <span style={{ width: 26, height: 26, borderRadius: 8, background: (METRIC_COLORS[i % METRIC_COLORS.length]) + "22", color: METRIC_COLORS[i % METRIC_COLORS.length], display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, flexShrink: 0 }}>{i + 1}</span>
-              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 14 }}>{m.label}</div><div style={{ fontSize: 11.5, color: C.inkSoft }}>التجميع: {m.agg === "avg" ? "متوسط" : "إجمالي"}{m.pct ? " · نسبة مئوية %" : ""}</div></div>
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 14 }}>{m.label}</div><div style={{ fontSize: 11.5, color: C.inkSoft }}>{m.kind === "snapshot" ? "رقم حالي تراكمي" : "رقم شهري"} · التجميع: {m.agg === "avg" ? "متوسط" : "إجمالي"}{m.pct ? " · نسبة مئوية %" : ""}</div></div>
               <IconBtn onClick={() => setMForm({ ...m })}><Icon name="pencil" size={14} /></IconBtn>
               <IconBtn danger onClick={() => delMetric(m.key)}><Icon name="trash" size={14} /></IconBtn>
             </div>))}
@@ -1094,19 +1248,22 @@ function Settings({ data, update }) {
 }
 
 function MetricForm({ initial, draft, onSave, onClose }) {
-  const [f, setF] = useState(draft);
+  const [f, setF] = useState({ kind: "monthly", ...draft });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const submit = () => { if (!f.label.trim()) { alert("اكتب اسم المقياس."); return; } onSave({ key: f.key, label: f.label.trim(), agg: f.agg, pct: !!f.pct }); };
+  const submit = () => { if (!f.label.trim()) { alert("اكتب اسم المقياس."); return; } onSave({ key: f.key, label: f.label.trim(), agg: f.agg, pct: !!f.pct, kind: f.kind || "monthly" }); };
   return (
     <Modal title={initial ? "تعديل المقياس" : "مقياس أداء جديد"} onClose={onClose}>
       <Field label="اسم المقياس *"><input style={inputStyle} value={f.label} onChange={(e) => set("label", e.target.value)} placeholder="مثلاً: عدد الستوريز، التعليقات، المشاهدات…" /></Field>
-      <Field label="طريقة التجميع عبر الحسابات">
+      <Field label="نوع المقياس">
+        <select style={inputStyle} value={f.kind} onChange={(e) => set("kind", e.target.value)}><option value="monthly">رقم شهري — بيتعمل كل شهر (منشورات، وصول، تعليقات…)</option><option value="snapshot">رقم حالي تراكمي — حالة الحساب (متابعين، مشتركين…) ويُحسب نموه تلقائي</option></select>
+      </Field>
+      <Field label="طريقة التجميع عبر المنصّات/الأفراد">
         <select style={inputStyle} value={f.agg} onChange={(e) => set("agg", e.target.value)}><option value="sum">إجمالي (نجمع الأرقام) — مناسب للأعداد</option><option value="avg">متوسط — مناسب للنِسب والمعدلات</option></select>
       </Field>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>
         <input type="checkbox" checked={!!f.pct} onChange={(e) => set("pct", e.target.checked)} style={{ width: 17, height: 17 }} /> المقياس ده نسبة مئوية (يتعرض بعلامة %)
       </label>
-      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 14, lineHeight: 1.7 }}>النِسب (زي التفاعل والالتزام) خليها «متوسط» + «نسبة مئوية». الأعداد (زي المنشورات والوصول) خليها «إجمالي».</div>
+      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 14, lineHeight: 1.7 }}>الأرقام التراكمية (متابعين/مشتركين) خليها «رقم حالي تراكمي» — بتظهر في «أرقام المنصّات» بس، مش في أداء الأفراد. النِسب خليها «متوسط» + «نسبة مئوية»، والأعداد «إجمالي».</div>
       <div style={{ display: "flex", gap: 10 }}><Btn onClick={submit}>حفظ</Btn><Btn kind="line" onClick={onClose}>إلغاء</Btn></div>
     </Modal>
   );
